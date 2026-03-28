@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="refresh" content="10">
+<title>PredBot Dashboard</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0f172a; color:#e2e8f0; font-family:-apple-system,system-ui,sans-serif; padding:20px; }
+  .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:24px; }
+  .header h1 { font-size:24px; color:#f8fafc; }
+  .header .status { padding:6px 16px; border-radius:20px; font-size:13px; font-weight:600; }
+  .status-active { background:#065f46; color:#6ee7b7; }
+  .status-halted { background:#7f1d1d; color:#fca5a5; }
+  .mode-badge { background:#1e3a5f; color:#7dd3fc; padding:4px 12px; border-radius:12px; font-size:12px; margin-left:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:24px; }
+  .stat { background:#1e293b; border-radius:12px; padding:16px; text-align:center; }
+  .stat .num { font-size:28px; font-weight:700; color:#f8fafc; }
+  .stat .label { font-size:12px; color:#94a3b8; margin-top:4px; }
+  .section { background:#1e293b; border-radius:12px; padding:16px; margin-bottom:16px; }
+  .section h2 { font-size:16px; color:#94a3b8; margin-bottom:12px; border-bottom:1px solid #334155; padding-bottom:8px; }
+  .card { background:#0f172a; border-radius:8px; padding:10px 14px; margin-bottom:8px; font-size:13px; line-height:1.5; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px; font-weight:600; background:#334155; margin-right:6px; }
+  .tag-yes { background:#065f46; color:#6ee7b7; }
+  .tag-no { background:#7f1d1d; color:#fca5a5; }
+  .ev { color:#fbbf24; margin-left:8px; font-weight:600; }
+  .empty { color:#64748b; font-style:italic; padding:8px 0; }
+  .error-card { border-left:3px solid #f87171; color:#fca5a5; }
+  .footer { text-align:center; color:#475569; font-size:12px; margin-top:24px; }
+  .pnl { font-weight:700; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>PredBot Dashboard</h1>
+      <span class="mode-badge">PAPER MODE</span>
+    </div>
+    <div>
+      <span class="status status-active">Active</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="stat"><div class="num">1</div><div class="label">Scans</div></div>
+    <div class="stat"><div class="num">0</div><div class="label">Markets</div></div>
+    <div class="stat"><div class="num">0</div><div class="label">EV Signals</div></div>
+    <div class="stat"><div class="num">0</div><div class="label">Arb Signals</div></div>
+    <div class="stat"><div class="num" style="color:#4ade80">$0.00</div><div class="label">Total P&L</div></div>
+    <div class="stat"><div class="num" style="color:#4ade80">$0.00</div><div class="label">Daily P&L</div></div>
+    <div class="stat"><div class="num">0</div><div class="label">Trades (W:0 L:0)</div></div>
+    <div class="stat"><div class="num">0%</div><div class="label">Win Rate</div></div>
+  </div>
+
+  <div class="section">
+    <h2>Open Positions</h2>
+    
+        <div class="card">
+            <span class="tag tag-yes">YES</span>
+            <strong>Test?</strong><br>
+            <small>test &middot; Entry: 0.500 &middot; $5.00</small>
+        </div>
+  </div>
+
+  <div class="section">
+    <h2>Recent Signals</h2>
+    <div class="empty">No signals yet -- waiting for first scan</div>
+  </div>
+
+  
+
+  <div class="footer">
+    Last updated: 01:33:02 PM &middot; Bankroll: $1000.00 &middot; Auto-refreshes every 10s
+  </div>
+</body>
+</html>
