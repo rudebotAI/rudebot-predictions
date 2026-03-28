@@ -23,4 +23,23 @@ pip install py-clob-client 2>/dev/null || pip3 install py-clob-client 2>/dev/nul
 # 4. Create required directories
 echo "[4/4] Creating directories..."
 mkdir -p logs/backtest
-mkdir -p 
+mkdir -p logs
+echo "  ✓ Directories created"
+
+echo ""
+echo "=================================="
+echo "  Setup Complete!"
+echo "=================================="
+echo ""
+echo "To start paper trading:"
+echo "  python main.py"
+echo ""
+echo "Single scan test:"
+echo "  python main.py --once"
+echo ""
+echo "Optional: Get API keys for stronger research signals:"
+echo "  Brave Search: https://brave.com/search/api/         (~\$3/mo)"
+echo "  xAI/Grok:     https://console.x.ai/                (~\$5/mo free credits)"
+echo "  ScrapeCreators: https://scrapecreators.com/         (~\$19/mo)"
+echo ""
+echo "Add keys to config.yaml under 'research:' section."
