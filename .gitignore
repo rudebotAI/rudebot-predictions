@@ -1,0 +1,17 @@
+# Secrets
+.env
+
+# Logs & state
+logs/
+*.log
+safety_state.json
+EMERGENCY_STOP
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
