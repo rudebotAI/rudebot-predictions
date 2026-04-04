@@ -1,8 +1,9 @@
-# Prediction Market Quant Bot -- Dependencies
 pyyaml>=6.0
 requests>=2.31
 certifi>=2023.0
 websocket-client>=1.6.0
 numpy>=1.24
-# py-clob-client>=0.4.0   # Uncomment for LIVE Polymarket trading
-# py-order-utils>=0.2.0   # Uncomment for LIVE Polymarket trading
+python-dotenv>=1.0
+pytest>=7.0
+# py-glob-client>=0.4.0    # Uncomment for LIVE Polymarket
+# py-order-utils>=0.2.0    # Uncomment for LIVE Polymarket
