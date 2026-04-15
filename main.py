@@ -31,7 +31,7 @@ class PredMarketBot:
     def __init__(self):
         self.config = load_config()
         self.risk = RiskManager(self.config)
-        self.scanner = EVScanner({"min_ev_threshold": self.config.risk.min_ev_threshold, "min_market_volume": 500})
+        self.scanner = EVScanner({"min_ev_threshold": self.config.risk.min_ev_threshold, "min_market_volume": 100})
         self.paper = PaperTrader(self.config.__dict__ if hasattr(self.config, '__dict__') else {})
 
         # Initialize connectors
@@ -91,7 +91,7 @@ class PredMarketBot:
         for opp in opportunities:
             edge = opp.get("edge", 0)
             ev = opp.get("ev", 0)
-            if edge > 0.02 and ev > self.config.risk.min_ev_threshold:
+            if edge > 0.005 and ev > self.config.risk.min_ev_threshold:
                 filtered_opps.append(opp)
                 logger.info(f"Opportunity: {opp.get('question', 'unknown')[:50]} | EV={ev:.4f} | Edge={edge:.4f}")
 
