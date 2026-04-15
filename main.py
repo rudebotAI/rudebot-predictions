@@ -42,9 +42,55 @@ def _to_float(x, default=0.0):
 STOP_LOSS_PCT = -0.50
 TAKE_PROFIT_PCT = 1.00
 
+# EV sanity cap: a binary 0-1 contract cannot have EV > ~1 per $ staked.
+# Anything above this is almost certainly a scanner formula/unit bug -- skip it.
+EV_SANITY_CAP = 2.0
+
+
+def _setup_persistence():
+    """Persist logs/ across Railway redeploys by redirecting to a mounted Volume.
+
+    If /data exists (Railway Volume mounted at /data), symlink ./logs -> /data/logs
+    so anything the bot writes to logs/ (trades.json, paper_trades.json, etc.)
+    survives redeploys. Safe no-op when /data is not mounted (local dev).
+    """
+    data_dir = Path("/data")
+    logs_dir = Path("logs")
+    if not (data_dir.exists() and data_dir.is_dir()):
+        return  # no volume mounted; nothing to do
+    persistent = data_dir / "logs"
+    persistent.mkdir(parents=True, exist_ok=True)
+
+    # If logs/ is already our symlink, done.
+    if logs_dir.is_symlink():
+        return
+
+    # If there's a real logs/ dir from a previous deploy, migrate its contents.
+    if logs_dir.exists():
+        for f in logs_dir.iterdir():
+            target = persistent / f.name
+            if not target.exists():
+                try:
+                    f.rename(target)
+                except OSError:
+                    pass
+        try:
+            logs_dir.rmdir()
+        except OSError:
+            pass
+
+    if not logs_dir.exists():
+        try:
+            logs_dir.symlink_to(persistent, target_is_directory=True)
+            logger.info(f"persistence: logs/ -> {persistent} (Railway Volume)")
+        except OSError as e:
+            logger.warning(f"persistence: symlink failed, falling back to ephemeral: {e}")
+
 
 class PredMarketBot:
     def __init__(self):
+        # Set up persistent storage BEFORE anything writes to logs/
+        _setup_persistence()
         self.config = load_config()
         self.risk = RiskManager(self.config)
         self.scanner = EVScanner({
@@ -149,12 +195,21 @@ class PredMarketBot:
         opportunities = self.scanner.scan(markets)
 
         filtered = []
+        bogus = 0
         for opp in opportunities:
             edge = opp.get("edge", 0)
             ev = opp.get("ev", 0)
+            # Reject obviously broken EV values -- binary 0-1 contract can't exceed ~1 per $
+            if ev >= EV_SANITY_CAP:
+                bogus += 1
+                continue
             if edge > 0.005 and ev > self.config.risk.min_ev_threshold:
                 filtered.append(opp)
                 logger.info(f"Opportunity: {opp.get('question','unknown')[:50]} | EV={ev:.4f} | Edge={edge:.4f}")
+        if bogus:
+            msg = f"scanner returned {bogus} opportunity(ies) with EV >= {EV_SANITY_CAP} -- likely formula bug, skipped"
+            logger.warning(msg)
+            self._errors.append(msg)
 
         self._last_ev_count = len(filtered)
         for opp in filtered:
