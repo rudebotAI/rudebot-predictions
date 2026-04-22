@@ -1,0 +1,145 @@
+# PredictionBot v4.0 -- Edge Edition Configuration
+# =================================================
+# IMPORTANT: Fill in your API keys before running.
+# The bot starts in PAPER mode -- no real money until you change it.
+
+mode: paper  # paper | live (ONLY change to live after validated results)
+
+kalshi:
+  email: ""       # Or set KALSHI_EMAIL env var
+  api_key: ""     # Or set KALSHI_API_KEY env var
+
+telegram:
+  bot_token: ""   # Or set TELEGRAM_BOT_TOKEN env var
+  chat_id: ""     # Or set TELEGRAM_CHAT_ID env var
+  require_confirm: true  # CHANGED: was true -- bot now auto-executes in paper mode
+  send_scan_summary: true  # Send periodic scan summaries
+
+coinbase:
+  price_cache_ttl: 30        # Cache spot prices for 30 seconds
+  # No API key needed -- public price data
+
+research:
+  # ── FREE sources (no API key needed -- always active) ──
+  # hackernews: HN Algolia API
+
+  # coingecko: Crypto fear/greed + trending coins
+  # google_news: Google News RSS headline sentiment
+  # reddit_public: Reddit .json endpoints (rate-limited but free)
+
+  # ── PAID sources (optional, stronger signals) ──
+  scrapecreators_api_key: ""  # Reddit/TikTok -- https://scrapecreators.com (~$19/mo)
+  xai_api_key: ""             # X/Twitter -- https://console.x.ai (~$5/mo free credits)
+  brave_api_key: ""           # Web search -- https://brave.com/search/api ($3/mo)
+  research_cache_ttl: 1800    # Cache research results for 30 min
+  research_sources:           # Active sources (free ones need no keys)
+    - hackernews
+    - coingecko
+    - google_news
+    - reddit_public
+    # Uncomment when you add keys:
+    # - reddit         # requires scrapecreators_api_key
+    # - web            # requires brave_api_key
+    # - x              # requires xai_api_key
+
+strategy:
+  min_ev_threshold: 0.05   # Minimum EV gap to trigger signal (5%)
+  kelly_fraction: 0.25     # Quarter-Kelly (safety multiplier)
+  max_position_usd: 10.00  # Max per-trade size (scaled up with $1K bankroll)
+  scan_interval_sec: 60    # Scan every minute for more opportunities
+  min_market_volume: 1000  # Lowered to scan more markets
+  min_liquidity_depth: 50  # Skip markets with LMSR b < this value
+  platforms:               # Which platforms to scan
+    - kalshi
+
+risk:
+  max_daily_loss_usd: 100.00     # Auto-stop if daily loss exceeds this (scaled with bankroll)
+  max_open_positions: 5           # Max simultaneous positions
+  max_consecutive_losses: 3       # Pause after N consecutive losses
+  max_portfolio_pct: 0.10         # Never risk >10% of bankroll on one bet
+  bankroll_usd: 1000.00           # Starting capital (for Kelly calculations)
+  cooldown_after_stop_min: 60     # Wait time after circuit breaker triggers
+  min_market_liquidity: 10000
+  max_spread_tolerance: 0.05      # Skip markets with > 5% bid-ask spread
+
+# ── NEW: WebSocket Real-Time Feeds ──
+websocket:
+  enabled: true                    # Enable real-time WebSocket feeds
+  assets:                          # Binance streams to subscribe
+    - btcusdt
+    - ethusdt
+    - solusdt
+    - xrpusdt
+
+# ── NEW: Late Entry V3 Strategy ──
+late_entry:
+  enabled: true                    # Enable Late Entry V3 (proven strategy)
+  entry_window_sec: 240            # Only enter in last 4 minutes before close
+  min_confidence: 0.30             # Minimum price gap between favorite/underdog
+  price_max: 0.92                  # Don't buy favorites above this
+  price_min: 0.08                  # Don't buy underdogs below this
+  base_size_usd: 10.00             # Base position size
+  aggressive_scaling: true         # Scale up closer to close
+  stop_loss_pct: -12               # Per-position stop loss %
+  flip_stop: true                  # Exit if your side becomes underdog
+  coins:                           # Which crypto markets to trade
+    - BTC
+    - ETH
+    - SOL
+    - XRP
+
+# ── NEW: Fair Value Model ──
+fair_value:
+  min_edge_bps: 200                # Minimum edge in basis points (2%)
+  max_edge_bps: 5000               # Max edge (50% -- likely data error)
+  model_weights:                   # Relative weight of each pricing model
+    cross_platform: 3.0            # Strongest: independent market makers
+    orderbook: 2.5                 # Real-time orderbook microprice
+    vig_stripped: 1.5              # Remove market maker spread
+    momentum: 1.0                  # Technical indicators overlay
+    volume_regression: 0.8         # Low volume -> regress to 0.5
+
+# ── NEW: Safety Guard (production-grade) ──
+safety:
+  max_order_usd: 50.00             # Hard per-order cap (never exceeded)
+  max_market_investment: 200.00    # Max cumulative investment per market
+  max_hourly_loss_usd: 50.00      # Hourly drawdown circuit breaker
+  max_orders_per_minute: 10        # Rate limit
+
+# ── NEW: Backtesting ──
+backtesting:
+  log_dir: logs/backtest           # CSV data log directory
+
+# ── NEW: Auto-Redeem ──
+auto_redeem:
+  enabled: true
+  redeem_interval_sec: 300         # Check every 5 minutes
+  min_redeem_usd: 0.50             # Skip dust amounts
+
+# ── Existing: Crypto Momentum ──
+crypto_momentum:
+  enabled: true                    # Enable BTC short-term price tracking
+  assets:                          # Which assets to track
+    - BTC-USD
+  candle_granularity: 300          # 5-minute candles
+  candle_lookback: 100             # Number of candles to fetch
+  rsi_period: 14                   # RSI lookback
+  bb_period: 20                    # Bollinger Bands lookback
+  ema_fast: 9                      # Fast EMA period
+  ema_slow: 21                     # Slow EMA period
+  confidence_threshold: 0.55       # Minimum confidence to generate signal
+  cache_ttl: 30                    # Cache analysis for 30 seconds
+  price_tracker:
+    product: BTC-USD
+    poll_interval_sec: 10          # Price poll frequency
+    alert_threshold_pct: 1.0       # Alert on 1%+ moves in 5min window
+
+news_sentinel:
+  news_poll_interval_sec: 120      # Check news every 2 minutes
+  max_news_items: 200              # Rolling news buffer size
+
+logging:
+  trade_log: logs/trades.json
+  performance_log: logs/performance.json
+  state_file: logs/state.json
+  verbose: true                   # Print detailed scan output
