@@ -91,8 +91,6 @@ class MCPPlugin:
     def get_markets(self, platform: str = "all", limit: int = 20) -> dict:
         """Fetch markets from specified platform."""
         result = {"polymarket": [], "kalshi": []}
-        if platform in ("all", "polymarket"):
-            result["polymarket"] = self.bot.poly.scan_markets_with_prices(limit=limit)
         if platform in ("all", "kalshi"):
             result["kalshi"] = self.bot.kalshi.scan_markets_with_prices(limit=limit)
         return result

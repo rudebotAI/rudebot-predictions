@@ -142,9 +142,6 @@ def _validate(cfg: BotConfig):
     if cfg.mode == "live":
         if not cfg.kalshi.api_key and "kalshi" in cfg.platforms:
             warnings.append("KALSHI_API_KEY not set but kalshi in platforms")
-        if not cfg.polymarket.private_key and "polymarket" in cfg.platforms:
-            warnings.append("POLYMARKET_PRIVATE_KEY not set but polymarket in platforms")
-
     if not cfg.telegram.bot_token:
         warnings.append("TELEGRAM_BOT_TOKEN not set — alerts disabled")
 

@@ -45,8 +45,6 @@ class LiveTrader:
         price = opportunity.get("market_price", 0)
         signal = opportunity.get("signal", "YES")
 
-        if platform == "polymarket":
-            return self._execute_polymarket(opportunity, size_usd, price, signal)
         elif platform == "kalshi":
             return self._execute_kalshi(opportunity, size_usd, price, signal)
         else:

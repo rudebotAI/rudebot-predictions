@@ -18,7 +18,6 @@ from env_config import load_config
 from risk_manager import RiskManager
 from engines.scanner import EVScanner
 from connectors.kalshi import KalshiConnector
-from connectors.polymarket import PolymarketConnector
 from execution.paper import PaperTrader
 import dashboard
 
@@ -99,7 +98,6 @@ class PredMarketBot:
         })
         self.paper = PaperTrader(self.config.__dict__ if hasattr(self.config, '__dict__') else {})
         self.kalshi = KalshiConnector(self.config.kalshi.__dict__ if hasattr(self.config.kalshi, '__dict__') else {})
-        self.polymarket = PolymarketConnector(self.config.polymarket.__dict__ if hasattr(self.config.polymarket, '__dict__') else {})
 
         self.paper_trades_path = Path("logs/paper_trades.json")
         self.paper_trades_path.parent.mkdir(parents=True, exist_ok=True)
@@ -168,29 +166,12 @@ class PredMarketBot:
                 logger.warning(msg)
                 self._errors.append(msg)
 
-        if "polymarket" in self.config.platforms:
-            try:
-                p_markets = self.polymarket.scan_markets_with_prices(limit=50)
-                markets.extend(p_markets)
-                p_count = len(p_markets)
-                logger.info(f"Polymarket: fetched {p_count} markets")
-            except Exception as e:
-                msg = f"Polymarket fetch failed: {e}"
-                logger.warning(msg)
-                self._errors.append(msg)
-
         self._last_kalshi_count = k_count
         self._last_poly_count = p_count
 
         if not markets:
             logger.warning("No markets fetched from any platform")
             return []
-
-        if "kalshi" in self.config.platforms and "polymarket" in self.config.platforms:
-            k = [m for m in markets if m.get("platform") == "kalshi"]
-            p = [m for m in markets if m.get("platform") == "polymarket"]
-            if k and p:
-                markets = self.scanner.cross_reference_markets(p, k)
 
         opportunities = self.scanner.scan(markets)
 
@@ -254,10 +235,6 @@ class PredMarketBot:
                 except Exception as e:
                     logger.debug(f"closures: kalshi get_market({market_id}) failed: {e}")
                     continue
-            else:
-                # polymarket close-loop can be added later; skip for now
-                continue
-
             if not m:
                 continue
 
