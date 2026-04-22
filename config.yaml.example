@@ -1,7 +1,0 @@
-# PredictionBot v4.0 -- Edge Edition Configuration
-# =================================================
-# IMPORTANT: Fill in your API keys before running.
-# The bot starts in PAPER mode -- no real money until you change it.
-
-mode: paper# paper | live (ONLY change to live after validated results)
-
