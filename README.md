@@ -1,115 +1,139 @@
-# Prediction Market Quant Bot
+# Prediction Market Quant Bot — Kalshi
 
-Scans Polymarket + Kalshi for +EV opportunities using a full quant stack:
-- **EV Gap Detection** -- finds mispriced markets
-- **Kelly Criterion** -- optimal position sizing (quarter-Kelly for safety)
-- **LMSR Price Impact** -- flags thin liquidity pools
-- **KL-Divergence** -- cross-platform price discrepancy scanner
-- **Bayesian Updates** -- adjusts probabilities from volume/momentum signals
-- **Cross-Platform Arbitrage** -- detects same-event price gaps
+Scans **Kalshi** prediction markets for +EV opportunities using a quant stack:
 
-Runs 24/7 in **paper mode** by default. Sends Telegram alerts with confirm/skip buttons before any trade.
+- **EV Gap Detection** — finds mispriced markets
+- **Bayesian Updates** — adjusts probabilities from volume / momentum signals
+- **LMSR Price Impact** — flags thin liquidity pools before sizing
+- **KL-Divergence** — cross-event consistency check
+- **Cross-event Arbitrage** — same-outcome priced differently across related markets
+- **Kelly Criterion** — optimal position sizing (¼-Kelly by default)
+- **Resolution Sniper** — late-cycle resolution gap trades
+- **Order-Book Imbalance** — short-horizon directional bias
+
+Runs 24/7 in **paper mode** by default. Sends Telegram alerts with Confirm /
+Skip buttons before any trade.
+
+> Polymarket support was removed (the bot is now Kalshi-only). The
+> `connectors/polymarket.py` file and Polymarket env vars are gone from
+> `main`. The earlier multi-platform scanners are kept as engines for
+> cross-event arbitrage on Kalshi itself.
 
 ---
 
-## Quick Start
+## Quick start
 
-### 1. Install dependencies
+### 1. Install
+
 ```bash
-cd prediction-bot
 pip install -r requirements.txt
 ```
 
 ### 2. Configure
-```bash
-cp config.yaml config.yaml.backup   # optional
-```
 
-Edit `config.yaml`:
-- **Telegram** (required for alerts): Set `bot_token` and `chat_id`
-- **Polymarket** (optional): Set `private_key` for authenticated access
-- **Kalshi** (optional): Set `email` and `api_key`
-- Leave `mode: paper` -- do NOT change to `live` until you've validated performance
+Copy `.env.example` to `.env` and fill in at least:
 
-#### Getting a Telegram Bot Token
-1. Message [@BotFather](https://t.me/BotFather) on Telegram
-2. Send `/newbot`, follow prompts
-3. Copy the token into `config.yaml`
-4. Send any message to your bot, then visit `https://api.telegram.org/bot<TOKEN>/getUpdates` to find your `chat_id`
+| Var | Required? | Notes |
+|---|---|---|
+| `BOT_MODE` | yes | `paper` or `live`. Start with `paper`. |
+| `KALSHI_EMAIL` | yes | Kalshi account email |
+| `KALSHI_API_KEY` | yes | from Kalshi → Account → API |
+| `TELEGRAM_BOT_TOKEN` | recommended | for alerts |
+| `TELEGRAM_CHAT_ID` | recommended | your chat id |
+| `BRAVE_API_KEY` | optional | news-sentinel signal |
+| `X_BEARER_TOKEN` | optional | news-sentinel signal |
+| `COINBASE_API_KEY` / `COINBASE_API_SECRET` | optional | crypto research feed |
+
+### Getting a Telegram Bot Token
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`.
+2. Copy the token.
+3. Send any message to your bot, then visit
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` to find your `chat_id`.
 
 ### 3. Run
+
 ```bash
-# Normal mode -- scans every 120s until stopped
+# Normal mode — scans every 120s until stopped
 python main.py
 
-# Single scan -- run once and exit (good for testing)
+# Single scan — run once and exit (good for testing)
 python main.py --once
 ```
 
-### 4. Telegram Commands
-Once running, send these to your bot:
-- `/pnl` -- Current performance summary
-- `/status` -- Risk manager state
-- `/positions` -- Open paper positions
-- `/resume` -- Reset risk manager after circuit breaker
-- `/help` -- List commands
+### 4. Telegram commands (once running)
+
+- `/pnl` — current performance summary
+- `/status` — risk-manager state
+- `/positions` — open positions
+- `/resume` — reset risk manager after circuit breaker
+- `/help` — list commands
 
 ---
 
-## How It Works
+## How a scan cycle works
 
-Each scan cycle:
-1. **Risk check** -- stops if daily loss limit hit or too many consecutive losses
-2. **Fetch markets** from Polymarket + Kalshi (top 50 each)
-3. **Cross-reference** -- match same events across platforms
-4. **EV scan** -- estimate true probability, find gaps > 5%
-5. **LMSR analysis** -- estimate liquidity, flag thin pools
-6. **Arbitrage scan** -- find same-event price gaps across platforms
-7. **KL-Divergence** -- flag significant cross-platform probability divergences
-8. **Kelly sizing** -- compute optimal bet size (capped at quarter-Kelly)
-9. **Telegram alert** -- send opportunity with Confirm/Skip buttons
-10. **Exit check** -- monitor open positions for take-profit/stop-loss
+1. **Risk check** — stops if daily loss limit hit or too many consecutive losses
+2. **Fetch markets** from Kalshi (top 50 by volume)
+3. **EV scan** — estimate true probability, find gaps > 5%
+4. **LMSR analysis** — estimate liquidity, flag thin pools
+5. **Cross-event arbitrage** — flag same-outcome inconsistencies
+6. **KL-divergence** — flag suspicious probability divergences
+7. **Kelly sizing** — compute optimal bet size (capped at ¼-Kelly)
+8. **Telegram alert** — send opportunity with Confirm / Skip buttons
+9. **Exit check** — monitor open positions for take-profit / stop-loss
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
-prediction-bot/
-├── main.py                  # Entry point + orchestrator
-├── config.yaml              # All settings (API keys, risk params)
-├── requirements.txt
+.
+├── main.py                # Entry point + orchestrator
+├── env_config.py          # Env → typed config
+├── risk_manager.py        # Risk caps, circuit breakers, /status, /resume
 ├── connectors/
-│   ├── polymarket.py        # Polymarket CLOB API wrapper
-│   └── kalshi.py            # Kalshi REST API wrapper
+│   └── kalshi.py          # Kalshi REST + per-event enrichment
 ├── engines/
-│   ├── scanner.py           # EV gap detector
-│   ├── sizing.py            # Kelly criterion sizing
-│   ├── lmsr.py              # LMSR price impact calculator
-│   ├── divergence.py        # KL-divergence scanner
-│   ├── bayesian.py          # Bayesian probability updater
-│   └── arbitrage.py         # Cross-platform arb detector
+│   ├── scanner.py         # EV gap detector
+│   ├── sizing.py          # Kelly criterion
+│   ├── lmsr.py            # LMSR price impact
+│   ├── divergence.py      # KL-divergence
+│   ├── bayesian.py        # Bayesian probability updates
+│   ├── arbitrage.py       # Cross-event arb
+│   ├── obi.py             # Order-book imbalance
+│   ├── resolution_sniper.py
+│   ├── market_maker.py
+│   ├── fair_value.py
+│   └── auto_redeem.py
 ├── execution/
-│   ├── paper.py             # Paper trading engine
-│   ├── live.py              # Live execution (Phase 2)
-│   └── risk.py              # Risk manager + circuit breakers
+│   ├── paper.py           # Paper trading engine
+│   ├── live.py            # Live execution
+│   ├── orders.py
+│   ├── order_router.py
+│   ├── risk.py
+│   └── state_store.py     # Position persistence
+├── subbots/
+│   ├── news_sentinel.py
+│   └── price_tracker.py
 ├── alerts/
-│   └── telegram.py          # Telegram alerts + inline buttons
-└── logs/                    # Auto-created at runtime
-    ├── trades.json
-    └── performance.json
+│   └── telegram.py
+├── tools/
+│   └── clear_positions.py # Manual paper-state flush
+├── tests/
+└── logs/
 ```
 
 ---
 
-## Safety Features
+## Safety features
 
 | Feature | Default | Purpose |
-|---------|---------|---------|
-| Paper mode | `mode: paper` | No real money until you flip it |
-| Telegram confirm | `require_confirm: true` | Must approve every trade |
-| Quarter-Kelly | `kelly_fraction: 0.25` | Conservative sizing |
-| Max position | `$10` | Per-trade cap during testing |
+|---|---|---|
+| Paper mode | `BOT_MODE=paper` | No real money until you flip it |
+| Telegram confirm | `require_confirm: true` | Manual approval per trade |
+| ¼-Kelly | `kelly_fraction: 0.25` | Conservative sizing |
+| Max position | `$10` | Per-trade cap |
 | Daily loss limit | `$20` | Auto-stops bot |
 | Max consecutive losses | `3` | Pauses after losing streak |
 | Max open positions | `5` | Prevents overexposure |
@@ -117,25 +141,36 @@ prediction-bot/
 
 ---
 
-## Going Live (Phase 2)
+## Going live
 
-**Only after paper results show consistent edge:**
+**Only after paper results show consistent edge over 2-4+ weeks:**
 
-1. Fund Polymarket wallet (Polygon USDC) and/or Kalshi account
-2. Add credentials to `config.yaml`
-3. Change `mode: live`
-4. Keep `require_confirm: true` initially
-5. Start with minimum sizes ($1-2 per trade)
-6. Monitor via Telegram for at least a week before increasing size
+1. Fund Kalshi account.
+2. Set `BOT_MODE=live` and `KALSHI_API_KEY` / `KALSHI_EMAIL`.
+3. Keep `require_confirm: true` initially.
+4. Start with minimum sizes ($1-2 per trade).
+5. Monitor via Telegram for at least a week before raising sizes.
 
-⚠️ **Real money = real risk.** The bot makes no guarantees of profit.
+> ⚠️ Real money = real risk. No guarantees of profit.
 
 ---
 
 ## Troubleshooting
 
-- **"Config not found"** -- Copy `config.yaml` and fill in your keys
-- **No Telegram alerts** -- Check `bot_token` and `chat_id` are correct
-- **"Risk: ..." warnings** -- Bot paused due to circuit breaker; send `/resume` via Telegram
-- **Empty market scans** -- API rate limits; increase `scan_interval_sec`
-- **Import errors** -- Run `pip install -r requirements.txt`
+- **"Max positions: 5/5" forever** — stale paper positions in the state store.
+  Run `python tools/clear_positions.py --dry-run` then `--confirm` to flush.
+- **No Telegram alerts** — check `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+- **"Risk: ..." warnings** — circuit breaker tripped; `/resume` via Telegram.
+- **Empty market scans** — Kalshi rate limit; increase scan interval.
+- **Import errors** — `pip install -r requirements.txt`.
+
+---
+
+## Deployment
+
+This repo deploys on Railway out of the box:
+
+- `railway.toml` defines the start command (`python main.py`) and restart policy.
+- Set the env vars above in the Railway → Variables panel.
+- Mount a Railway volume at `/app/state` so `state.json` (positions, PnL,
+  IV history) survives deploys.

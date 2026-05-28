@@ -1,29 +1,30 @@
 """
-Main Loop -- Python Async Prediction Bot v4.2
-- v5 Kalshi connector (event-based scan, new field names)
+Main Loop -- Python Async Prediction Bot v4.3
+- Kalshi-only (Polymarket removed)
 - In-process HTTP dashboard at http://<host>/ (see dashboard.py)
 - Close-loop: resolves open positions on market finalization + stop-loss/take-profit
+- v4.3: relaxed EV_SANITY_CAP from 2.0 -> 5.0 (matches scanner.compute_ev clamp)
 """
-import os
-import time
-import sys
 import asyncio
-import logging
 import json
+import logging
+import os
+import sys
+import time
 from collections import deque
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
 
-from env_config import load_config
-from risk_manager import RiskManager
-from engines.scanner import EVScanner
-from connectors.kalshi import KalshiConnector
-from execution.paper import PaperTrader
 import dashboard
+from connectors.kalshi import KalshiConnector
+from engines.scanner import EVScanner
+from env_config import load_config
+from execution.paper import PaperTrader
+from risk_manager import RiskManager
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("predbot")
 
@@ -37,34 +38,29 @@ def _to_float(x, default=0.0):
         return default
 
 
-# Stop-loss: close YES at -50% entry, take-profit at +100% entry (for paper discipline)
+# Stop-loss: close YES at -50% entry, take-profit at +100% entry (paper discipline)
 STOP_LOSS_PCT = -0.50
 TAKE_PROFIT_PCT = 1.00
 
-# EV sanity cap: a binary 0-1 contract cannot have EV > ~1 per $ staked.
-# Anything above this is almost certainly a scanner formula/unit bug -- skip it.
-EV_SANITY_CAP = 2.0
+# EV sanity cap. The scanner already clamps single-trade EV to 5.0; this gate
+# kicks in only when something truly broken happens upstream (e.g. all 50
+# markets in a scan come back with EV at the cap, suggesting a unit/formula
+# bug rather than a real opportunity).
+EV_SANITY_CAP = 5.0
 
 
 def _setup_persistence():
-    """Persist logs/ across Railway redeploys by redirecting to a mounted Volume.
-
-    If /data exists (Railway Volume mounted at /data), symlink ./logs -> /data/logs
-    so anything the bot writes to logs/ (trades.json, paper_trades.json, etc.)
-    survives redeploys. Safe no-op when /data is not mounted (local dev).
-    """
+    """Symlink logs/ -> /data/logs when a Railway Volume is mounted at /data."""
     data_dir = Path("/data")
     logs_dir = Path("logs")
     if not (data_dir.exists() and data_dir.is_dir()):
-        return  # no volume mounted; nothing to do
+        return
     persistent = data_dir / "logs"
     persistent.mkdir(parents=True, exist_ok=True)
 
-    # If logs/ is already our symlink, done.
     if logs_dir.is_symlink():
         return
 
-    # If there's a real logs/ dir from a previous deploy, migrate its contents.
     if logs_dir.exists():
         for f in logs_dir.iterdir():
             target = persistent / f.name
@@ -88,7 +84,6 @@ def _setup_persistence():
 
 class PredMarketBot:
     def __init__(self):
-        # Set up persistent storage BEFORE anything writes to logs/
         _setup_persistence()
         self.config = load_config()
         self.risk = RiskManager(self.config)
@@ -96,13 +91,16 @@ class PredMarketBot:
             "min_ev_threshold": self.config.risk.min_ev_threshold,
             "min_market_volume": 100,
         })
-        self.paper = PaperTrader(self.config.__dict__ if hasattr(self.config, '__dict__') else {})
-        self.kalshi = KalshiConnector(self.config.kalshi.__dict__ if hasattr(self.config.kalshi, '__dict__') else {})
+        self.paper = PaperTrader(
+            self.config.__dict__ if hasattr(self.config, "__dict__") else {}
+        )
+        self.kalshi = KalshiConnector(
+            self.config.kalshi.__dict__ if hasattr(self.config.kalshi, "__dict__") else {}
+        )
 
         self.paper_trades_path = Path("logs/paper_trades.json")
         self.paper_trades_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Live dashboard state
         self._scan_number = 0
         self._last_scan_at = None
         self._last_kalshi_count = 0
@@ -113,10 +111,12 @@ class PredMarketBot:
 
         logger.info(f"Bot initialized in {self.config.mode} mode")
         logger.info(f"Platforms: {self.config.platforms}")
-        logger.info(f"Risk limits: max_daily=${self.config.risk.max_daily_loss_usd}, max_pos=${self.config.risk.max_position_usd}")
+        logger.info(
+            f"Risk limits: max_daily=${self.config.risk.max_daily_loss_usd}, "
+            f"max_pos=${self.config.risk.max_position_usd}"
+        )
         logger.info(f"Min EV threshold: {self.config.risk.min_ev_threshold}")
 
-    # ---------- Dashboard state provider ----------
     def _build_state(self) -> dict:
         perf = self.paper.get_performance()
         risk_status = "Active"
@@ -148,7 +148,6 @@ class PredMarketBot:
             "errors": list(self._errors),
         }
 
-    # ---------- Scanning ----------
     async def scan_markets(self):
         logger.info("Scanning markets...")
         markets = []
@@ -180,15 +179,20 @@ class PredMarketBot:
         for opp in opportunities:
             edge = opp.get("edge", 0)
             ev = opp.get("ev", 0)
-            # Reject obviously broken EV values -- binary 0-1 contract can't exceed ~1 per $
             if ev >= EV_SANITY_CAP:
                 bogus += 1
                 continue
             if edge > 0.005 and ev > self.config.risk.min_ev_threshold:
                 filtered.append(opp)
-                logger.info(f"Opportunity: {opp.get('question','unknown')[:50]} | EV={ev:.4f} | Edge={edge:.4f}")
+                logger.info(
+                    f"Opportunity: {opp.get('question','unknown')[:50]} | "
+                    f"EV={ev:.4f} | Edge={edge:.4f}"
+                )
         if bogus:
-            msg = f"scanner returned {bogus} opportunity(ies) with EV >= {EV_SANITY_CAP} -- likely formula bug, skipped"
+            msg = (
+                f"scanner returned {bogus} opportunity(ies) at EV cap ({EV_SANITY_CAP}) -- "
+                "may indicate upstream price feed lag; skipped"
+            )
             logger.warning(msg)
             self._errors.append(msg)
 
@@ -214,9 +218,7 @@ class PredMarketBot:
         size = min(self.config.risk.max_position_usd, 10.0 + (edge * 100.0))
         return round(size, 2)
 
-    # ---------- Close-loop ----------
     def _check_closures(self):
-        """Close paper positions on market resolution, stop-loss, or take-profit."""
         open_positions = list(self.paper.get_open_positions())
         if not open_positions:
             return
@@ -241,7 +243,6 @@ class PredMarketBot:
             status = (m.get("status") or "").lower()
             result = (m.get("result") or "").lower()
 
-            # Resolution
             if status in ("finalized", "settled", "closed") and result in ("yes", "no"):
                 signal = (pos.get("signal") or "YES").upper()
                 win = (signal == "YES" and result == "yes") or (signal == "NO" and result == "no")
@@ -250,7 +251,6 @@ class PredMarketBot:
                 closed_now += 1
                 continue
 
-            # Stop-loss / take-profit using current mid
             yb = _to_float(m.get("yes_bid_dollars"))
             ya = _to_float(m.get("yes_ask_dollars"))
             lp = _to_float(m.get("last_price_dollars"))
@@ -280,16 +280,14 @@ class PredMarketBot:
         if closed_now:
             logger.info(f"closures: closed {closed_now} position(s)")
 
-    # ---------- Main loop ----------
     async def run(self):
-        # Start dashboard HTTP server once
         dashboard.set_state_provider(self._build_state)
         try:
             dashboard.start()
         except Exception as e:
             logger.warning(f"dashboard failed to start: {e}")
 
-        logger.info(f"Starting PredMarketBot v4.2 ({self.config.mode} mode)")
+        logger.info(f"Starting PredMarketBot v4.3 ({self.config.mode} mode)")
         logger.info(f"Scan interval: {self.config.scan_interval}s")
 
         while True:
@@ -297,7 +295,6 @@ class PredMarketBot:
                 self._scan_number += 1
                 self._last_scan_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-                # 1. Close any positions that need closing
                 try:
                     self._check_closures()
                 except Exception as e:
@@ -305,7 +302,6 @@ class PredMarketBot:
                     logger.error(msg, exc_info=True)
                     self._errors.append(msg)
 
-                # 2. Scan and take new positions
                 opportunities = await self.scan_markets()
                 for opp in opportunities:
                     market_id = opp.get("market_id", "unknown")
@@ -321,11 +317,17 @@ class PredMarketBot:
 
                     if self.config.mode == "paper":
                         trade = self.paper.open_position(opp, size)
-                        logger.info(f"[PAPER] Would trade {market_id} {side} ${size:.2f} @ {price:.3f}")
-                        self.risk.record_entry(market_id, price, int(size / price) if price > 0 else 0, side.lower(), size)
+                        logger.info(
+                            f"[PAPER] Would trade {market_id} {side} ${size:.2f} @ {price:.3f}"
+                        )
+                        self.risk.record_entry(
+                            market_id, price,
+                            int(size / price) if price > 0 else 0,
+                            side.lower(), size,
+                        )
                         self._log_paper_trade(trade)
                     else:
-                        logger.warning(f"[LIVE] mode not enabled in this deployment")
+                        logger.warning("[LIVE] mode not enabled in this deployment")
 
                 await asyncio.sleep(self.config.scan_interval)
             except KeyboardInterrupt:
