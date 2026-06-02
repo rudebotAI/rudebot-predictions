@@ -26,6 +26,10 @@ except ImportError:
 class KalshiSecrets:
     email: str = ""
     api_key: str = ""
+    # Live trading auth (RSA-PSS request signing). access_key is the API Key ID;
+    # private_key is the RSA private key in PEM format. Both required for live.
+    access_key: str = ""
+    private_key: str = ""
 
 
 @dataclass
@@ -37,6 +41,8 @@ class PolymarketSecrets:
 class TelegramSecrets:
     bot_token: str = ""
     chat_id: str = ""
+    # Every live trade must be confirmed via Telegram. Keep True for safety.
+    require_confirm: bool = True
 
 
 @dataclass
@@ -94,9 +100,16 @@ def load_config(config_path: str = None) -> BotConfig:
     # Load ALL secrets from env vars (never from YAML)
     cfg.kalshi.email = os.getenv("KALSHI_EMAIL", "")
     cfg.kalshi.api_key = os.getenv("KALSHI_API_KEY", "")
+    cfg.kalshi.access_key = os.getenv("KALSHI_ACCESS_KEY", "")
+    # PEM private key; allow literal "\n" in the env var (Railway one-liners).
+    _pk = os.getenv("KALSHI_PRIVATE_KEY", "")
+    cfg.kalshi.private_key = _pk.replace("\\n", "\n") if _pk else ""
     cfg.polymarket.private_key = os.getenv("POLYMARKET_PRIVATE_KEY", "")
     cfg.telegram.bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     cfg.telegram.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    _rc = os.getenv("TELEGRAM_REQUIRE_CONFIRM")
+    if _rc is not None:
+        cfg.telegram.require_confirm = _rc.strip().lower() in {"1", "true", "yes", "on"}
 
     # Risk overrides from env
     if os.getenv("MAX_DAILY_LOSS_USD"):
@@ -140,8 +153,17 @@ def _validate(cfg: BotConfig):
     warnings = []
 
     if cfg.mode == "live":
-        if not cfg.kalshi.api_key and "kalshi" in cfg.platforms:
-            warnings.append("KALSHI_API_KEY not set but kalshi in platforms")
+        # Live trading requires RSA signing auth + Telegram confirm. main.py
+        # enforces these as a hard gate (refuses to trade if unmet); these are
+        # the human-readable warnings explaining why.
+        if not cfg.kalshi.access_key:
+            warnings.append("LIVE: KALSHI_ACCESS_KEY not set — live trading will be refused")
+        if not cfg.kalshi.private_key:
+            warnings.append("LIVE: KALSHI_PRIVATE_KEY not set — live trading will be refused")
+        if not (cfg.telegram.bot_token and cfg.telegram.chat_id):
+            warnings.append("LIVE: Telegram not fully configured — live trading will be refused")
+        if not cfg.telegram.require_confirm:
+            warnings.append("LIVE: require_confirm is False — live trading will be refused (confirm is mandatory)")
     if not cfg.telegram.bot_token:
         warnings.append("TELEGRAM_BOT_TOKEN not set — alerts disabled")
 

@@ -20,6 +20,8 @@ from connectors.kalshi import KalshiConnector
 from engines.scanner import EVScanner
 from env_config import load_config
 from execution.paper import PaperTrader
+from execution.live import LiveTrader
+from alerts.telegram import TelegramAlerts
 from risk_manager import RiskManager
 
 logging.basicConfig(
@@ -98,6 +100,17 @@ class PredMarketBot:
             self.config.kalshi.__dict__ if hasattr(self.config.kalshi, "__dict__") else {}
         )
 
+        # Telegram confirm/alert channel + live executor.
+        self.telegram = TelegramAlerts({
+            "bot_token": self.config.telegram.bot_token,
+            "chat_id": self.config.telegram.chat_id,
+            "require_confirm": getattr(self.config.telegram, "require_confirm", True),
+        })
+        self.live = LiveTrader(self.kalshi, self.risk)
+        self._live_ready = False
+        if self.config.mode == "live":
+            self._live_ready = self._preflight_live()
+
         self.paper_trades_path = Path("logs/paper_trades.json")
         self.paper_trades_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -108,6 +121,8 @@ class PredMarketBot:
         self._last_ev_count = 0
         self._recent_signals = deque(maxlen=50)
         self._errors = deque(maxlen=20)
+        # Market IDs with an outstanding live confirm request (avoid re-nagging).
+        self._pending_live = set()
 
         logger.info(f"Bot initialized in {self.config.mode} mode")
         logger.info(f"Platforms: {self.config.platforms}")
@@ -116,6 +131,68 @@ class PredMarketBot:
             f"max_pos=${self.config.risk.max_position_usd}"
         )
         logger.info(f"Min EV threshold: {self.config.risk.min_ev_threshold}")
+
+    def _preflight_live(self) -> bool:
+        """Hard gate for live trading. ALL must hold or we refuse to trade.
+
+        Fails safe: if any precondition is missing we log CRITICAL and return
+        False. The run loop then scans only and never places an order. We never
+        silently fall back to paper writes or auto-execute without confirm.
+        """
+        problems = []
+        if not self.config.telegram.bot_token or not self.config.telegram.chat_id:
+            problems.append("Telegram not configured (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)")
+        if not getattr(self.config.telegram, "require_confirm", True):
+            problems.append("require_confirm is False (per-trade confirm is mandatory for live)")
+        if not self.kalshi.has_trading_auth():
+            problems.append("Kalshi trading auth missing (KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY)")
+
+        if problems:
+            for p in problems:
+                logger.critical(f"[LIVE] BLOCKED — {p}")
+            logger.critical(
+                "[LIVE] Live mode requested but preconditions not met. "
+                "Bot will SCAN ONLY and place no orders."
+            )
+            return False
+
+        self.live.enable()
+        logger.critical(
+            "[LIVE] Preconditions met. Live trading armed. Every trade still "
+            "requires explicit Telegram confirmation."
+        )
+        return True
+
+    def _process_live_confirmations(self):
+        """Execute trades the user confirmed via Telegram since the last poll."""
+        if not (self.config.mode == "live" and self._live_ready):
+            return
+        try:
+            confirmed = self.telegram.poll_callbacks()
+        except Exception as e:
+            logger.error(f"[LIVE] Telegram poll failed: {e}")
+            return
+        for info in confirmed:
+            opp = info.get("opp", {})
+            size_usd = float(info.get("sizing", {}).get("size_usd", 0) or 0)
+            market_id = opp.get("market_id", "unknown")
+            # Confirmation consumed; allow this market to be re-offered later.
+            self._pending_live.discard(market_id)
+            result = self.live.execute(opp, size_usd)
+            if result.get("success"):
+                logger.info(f"[LIVE] Executed {market_id}: {result}")
+                try:
+                    self.telegram.send_trade_opened({
+                        "market_id": market_id,
+                        "side": result.get("side"),
+                        "price": result.get("price"),
+                        "size_usd": result.get("size_usd"),
+                        "contracts": result.get("contracts"),
+                    })
+                except Exception:
+                    pass
+            else:
+                logger.warning(f"[LIVE] Order not placed for {market_id}: {result.get('error')}")
 
     def _build_state(self) -> dict:
         perf = self.paper.get_performance()
@@ -302,6 +379,9 @@ class PredMarketBot:
                     logger.error(msg, exc_info=True)
                     self._errors.append(msg)
 
+                # Execute any trades the user confirmed via Telegram since last cycle.
+                self._process_live_confirmations()
+
                 opportunities = await self.scan_markets()
                 for opp in opportunities:
                     market_id = opp.get("market_id", "unknown")
@@ -326,8 +406,33 @@ class PredMarketBot:
                             side.lower(), size,
                         )
                         self._log_paper_trade(trade)
+                    elif self._live_ready:
+                        # LIVE: never execute here. Send a Telegram confirm
+                        # request; execution happens only on explicit confirm,
+                        # handled by _process_live_confirmations() next cycles.
+                        if market_id in self._pending_live:
+                            continue
+                        sizing = {
+                            "size_usd": size,
+                            "shares": int(size / price) if price > 0 else 0,
+                            "kelly_raw": opp.get("kelly_raw", 0),
+                            "kelly_fractional": opp.get("kelly_fractional", 0),
+                        }
+                        try:
+                            self.telegram.send_opportunity(opp, sizing)
+                            self._pending_live.add(market_id)
+                            logger.info(
+                                f"[LIVE] Confirm requested via Telegram: {market_id} "
+                                f"{side} ${size:.2f} @ {price:.3f}"
+                            )
+                        except Exception as e:
+                            logger.error(f"[LIVE] Failed to send confirm request: {e}")
                     else:
-                        logger.warning("[LIVE] mode not enabled in this deployment")
+                        # mode == "live" but preconditions failed: scan only.
+                        logger.error(
+                            "[LIVE] Refusing to trade — preconditions not met "
+                            "(see startup CRITICAL logs). Scanning only."
+                        )
 
                 await asyncio.sleep(self.config.scan_interval)
             except KeyboardInterrupt:

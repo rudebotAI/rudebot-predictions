@@ -1,6 +1,9 @@
 """
-Live Trading Engine -- Executes real trades via platform APIs.
-ONLY activates when config mode = "live" AND user confirms via Telegram.
+Live Trading Engine -- Executes real trades on Kalshi.
+ONLY activates when config mode = "live", live auth is configured, AND the
+user confirms each trade via Telegram (enforced upstream in main.py).
+
+Kalshi-only. Polymarket support was removed from the project.
 """
 
 import logging
@@ -10,92 +13,71 @@ logger = logging.getLogger(__name__)
 
 class LiveTrader:
     """
-    Real money trade execution.
-    Wraps platform connectors with additional safety checks.
+    Real-money trade execution. Wraps the Kalshi connector with a final
+    risk-manager check. Must be explicitly enabled via enable().
     """
 
-    def __init__(self, polymarket_connector, kalshi_connector, risk_manager):
-        self.poly = polymarket_connector
+    def __init__(self, kalshi_connector, risk_manager):
         self.kalshi = kalshi_connector
         self.risk = risk_manager
-        self.enabled = False  # Must be explicitly enabled
+        self.enabled = False  # Must be explicitly enabled after preflight checks
 
     def enable(self):
-        """Enable live trading (called after config check)."""
+        """Enable live trading (called only after main.py preflight passes)."""
         self.enabled = True
         logger.critical("LIVE TRADING ENABLED -- real money at risk")
 
     def execute(self, opportunity: dict, size_usd: float) -> dict:
         """
-        Execute a real trade on the appropriate platform.
-
-        Returns trade result dict or error.
+        Execute a real trade on Kalshi. Returns a result dict.
+        On success: {"success": True, "platform": "kalshi", "result": ..., ...}
+        On failure/block: {"error": "..."}.
         """
         if not self.enabled:
             logger.error("Live trading not enabled -- ignoring execute call")
             return {"error": "Live trading not enabled"}
 
-        # Final risk check
-        can_trade, reason = self.risk.can_trade()
-        if not can_trade:
-            logger.warning(f"Risk manager blocked trade: {reason}")
-            return {"error": f"Risk blocked: {reason}"}
-
-        platform = opportunity.get("platform", "")
-        price = opportunity.get("market_price", 0)
-        signal = opportunity.get("signal", "YES")
-
-        elif platform == "kalshi":
-            return self._execute_kalshi(opportunity, size_usd, price, signal)
-        else:
-            return {"error": f"Unknown platform: {platform}"}
-
-    def _execute_polymarket(self, opp: dict, size_usd: float, price: float, signal: str) -> dict:
-        """Place order on Polymarket."""
-        token_ids = opp.get("token_ids", [])
-        if not token_ids:
-            return {"error": "No token IDs for Polymarket order"}
-
-        # YES = buy token[0], NO = buy token[1]
-        token_id = token_ids[0] if signal == "YES" else (token_ids[1] if len(token_ids) > 1 else None)
-        if not token_id:
-            return {"error": "Missing token ID"}
-
-        shares = size_usd / price if price > 0 else 0
-
-        result = self.poly.place_order(
-            token_id=token_id,
-            side="buy",
-            price=price,
-            size=shares,
-        )
-
-        if result:
-            self.risk.position_opened()
-            logger.info(f"[LIVE] Polymarket order placed: {signal} @ {price} | ${size_usd}")
-            return {"success": True, "platform": "polymarket", "result": result}
-
-        return {"error": "Polymarket order failed"}
-
-    def _execute_kalshi(self, opp: dict, size_usd: float, price: float, signal: str) -> dict:
-        """Place order on Kalshi."""
-        market_id = opp.get("market_id", "")
+        market_id = opportunity.get("market_id", "")
         if not market_id:
             return {"error": "No market ID for Kalshi order"}
 
-        price_cents = int(price * 100)
-        contracts = max(1, int(size_usd / price)) if price > 0 else 0
+        signal = str(opportunity.get("signal", "YES")).lower()
+        price = opportunity.get("market_price", 0) or opportunity.get("yes_price", 0)
+        if not price or price <= 0:
+            return {"error": "Invalid/zero price -- refusing to size order"}
+
+        # Final risk check (current risk_manager signature: market_id, position_usd, side)
+        allowed, reason = self.risk.can_trade(market_id, size_usd, signal)
+        if not allowed:
+            logger.warning(f"Risk manager blocked trade: {reason}")
+            return {"error": f"Risk blocked: {reason}"}
+
+        price_cents = int(round(price * 100))
+        contracts = max(1, int(size_usd / price))
 
         result = self.kalshi.place_order(
             market_id=market_id,
-            side=signal.lower(),
+            side=signal,
             price_cents=price_cents,
             count=contracts,
         )
 
-        if result:
-            self.risk.position_opened()
-            logger.info(f"[LIVE] Kalshi order placed: {signal} @ {price_cents}c | {contracts} contracts")
-            return {"success": True, "platform": "kalshi", "result": result}
+        if isinstance(result, dict) and not result.get("error"):
+            self.risk.record_entry(market_id, price, contracts, signal, size_usd)
+            logger.info(
+                f"[LIVE] Kalshi order placed: {signal.upper()} @ {price_cents}c | "
+                f"{contracts} contracts | ${size_usd:.2f}"
+            )
+            return {
+                "success": True,
+                "platform": "kalshi",
+                "market_id": market_id,
+                "side": signal,
+                "price": price,
+                "contracts": contracts,
+                "size_usd": size_usd,
+                "result": result,
+            }
 
-        return {"error": "Kalshi order failed"}
+        err = result.get("error") if isinstance(result, dict) else "Kalshi order failed"
+        return {"error": err or "Kalshi order failed"}

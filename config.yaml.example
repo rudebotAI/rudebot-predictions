@@ -6,13 +6,20 @@
 mode: paper  # paper | live (ONLY change to live after validated results)
 
 kalshi:
-  email: ""       # Or set KALSHI_EMAIL env var
-  api_key: ""     # Or set KALSHI_API_KEY env var
+  email: ""       # Or set KALSHI_EMAIL env var (read-only legacy auth)
+  api_key: ""     # Or set KALSHI_API_KEY env var (read-only legacy auth)
+  # --- LIVE TRADING AUTH (required for mode: live) ---
+  # Kalshi's authenticated trade API uses RSA-PSS request signing, NOT
+  # email/password. Generate an API key in Kalshi (Account -> API), then set:
+  #   KALSHI_ACCESS_KEY   = the API Key ID
+  #   KALSHI_PRIVATE_KEY  = the RSA private key (PEM). In Railway, paste the PEM
+  #                         with literal \n between lines; the loader restores them.
+  # Without BOTH of these, live mode refuses to place any order (scan-only).
 
 telegram:
-  bot_token: ""   # Or set TELEGRAM_BOT_TOKEN env var
-  chat_id: ""     # Or set TELEGRAM_CHAT_ID env var
-  require_confirm: true  # CHANGED: was true -- bot now auto-executes in paper mode
+  bot_token: ""   # Or set TELEGRAM_BOT_TOKEN env var (REQUIRED for live)
+  chat_id: ""     # Or set TELEGRAM_CHAT_ID env var (REQUIRED for live)
+  require_confirm: true  # MANDATORY for live: every trade needs Telegram Confirm/Skip
   send_scan_summary: true  # Send periodic scan summaries
 
 coinbase:

@@ -37,6 +37,96 @@ class KalshiConnector:
         self._last_request = 0
         self._logged_sample = False
 
+        # --- Trading auth (RSA-PSS request signing) ---
+        # Kalshi's authenticated trade-api/v2 uses an API Key ID + an RSA
+        # private key. Requests are signed with RSA-PSS(SHA256) over
+        # "<timestamp_ms><METHOD><path>". Read-only/public calls need none of
+        # this, so paper mode is unaffected when these are absent.
+        self.access_key = config.get("access_key", "")
+        self._private_key = None
+        pem = config.get("private_key", "") or ""
+        if self.access_key and pem:
+            try:
+                from cryptography.hazmat.primitives.serialization import (
+                    load_pem_private_key,
+                )
+                self._private_key = load_pem_private_key(
+                    pem.encode() if isinstance(pem, str) else pem, password=None
+                )
+                logger.info("Kalshi: trading auth configured (RSA key loaded)")
+            except Exception as e:
+                logger.error(
+                    "Kalshi: failed to load private key -- live trading disabled: "
+                    f"{type(e).__name__}: {e}"
+                )
+                self._private_key = None
+
+    def has_trading_auth(self) -> bool:
+        """True only when an API key ID and a usable RSA private key are present."""
+        return bool(self.access_key and self._private_key is not None)
+
+    def _sign(self, timestamp_ms: str, method: str, path: str) -> str:
+        """RSA-PSS(SHA256) signature of '<ts><METHOD><path>', base64-encoded.
+
+        `path` must be the full request path including the /trade-api/v2 prefix
+        and must exclude any query string, per Kalshi's spec.
+        """
+        import base64
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        message = f"{timestamp_ms}{method}{path}".encode()
+        signature = self._private_key.sign(
+            message,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.DIGEST_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+        return base64.b64encode(signature).decode()
+
+    def _signed_headers(self, method: str, path: str) -> dict:
+        ts = str(int(time.time() * 1000))
+        sign_path = f"/trade-api/v2{path}"
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "rudebot-predictions/5.0",
+            "KALSHI-ACCESS-KEY": self.access_key,
+            "KALSHI-ACCESS-TIMESTAMP": ts,
+            "KALSHI-ACCESS-SIGNATURE": self._sign(ts, method, sign_path),
+        }
+        return headers
+
+    def _signed_request(self, method: str, path: str, body: Optional[dict] = None,
+                        timeout: int = 15) -> Optional[dict]:
+        """Make an RSA-signed authenticated request. Returns parsed JSON or None."""
+        if not self.has_trading_auth():
+            logger.error(f"Kalshi {method} {path}: no trading auth configured")
+            return None
+        self._throttle()
+        url = f"{KALSHI_API}{path}"
+        data = json.dumps(body).encode() if body is not None else None
+        try:
+            req = urllib.request.Request(
+                url, data=data, headers=self._signed_headers(method, path), method=method
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode()[:300]
+            except Exception:
+                pass
+            logger.warning(f"Kalshi {method} {path} -> HTTP {e.code}: {e.reason} {detail}")
+            return None
+        except Exception as e:
+            logger.warning(f"Kalshi {method} {path} failed: {type(e).__name__}: {e}")
+            return None
+
     def _throttle(self):
         elapsed = time.time() - self._last_request
         if elapsed < 0.1:
@@ -142,19 +232,61 @@ class KalshiConnector:
         lp = _to_float(m.get("last_price_dollars"))
         return lp or yb or ya or None
 
-    # -- Trading (paper-mode guards) --
-    def place_order(self, market_id: str, side: str, price_cents: int, count: int) -> Optional[dict]:
-        logger.warning(f"place_order called for {market_id} -- paper-mode build ignores live orders")
-        return None
+    # -- Trading (live, RSA-signed) --
+    def place_order(self, market_id: str, side: str, price_cents: int, count: int,
+                    action: str = "buy", order_type: str = "limit") -> Optional[dict]:
+        """Place a real order on Kalshi via POST /portfolio/orders.
+
+        Requires trading auth (API key ID + RSA private key). Returns the
+        parsed order response on success, or None on failure / when auth is
+        absent (callers treat None / dict-with-'error' as failure).
+        """
+        if not self.has_trading_auth():
+            logger.error(
+                f"place_order({market_id}) refused: no Kalshi trading auth configured"
+            )
+            return None
+        side = side.lower()
+        if side not in ("yes", "no"):
+            return {"error": f"invalid side {side!r}"}
+        if count < 1 or price_cents <= 0 or price_cents >= 100:
+            return {"error": f"invalid price/count (price_cents={price_cents}, count={count})"}
+
+        import uuid
+        body = {
+            "ticker": market_id,
+            "action": action,            # "buy" or "sell"
+            "side": side,                # "yes" or "no"
+            "count": int(count),
+            "type": order_type,          # "limit" or "market"
+            "client_order_id": str(uuid.uuid4()),
+        }
+        # Limit price field is side-specific on Kalshi.
+        if order_type == "limit":
+            body["yes_price" if side == "yes" else "no_price"] = int(price_cents)
+
+        resp = self._signed_request("POST", "/portfolio/orders", body)
+        if resp is None:
+            return None
+        # Kalshi wraps the created order as {"order": {...}}.
+        return resp.get("order", resp) if isinstance(resp, dict) else resp
 
     def cancel_order(self, order_id: str) -> bool:
-        return False
+        resp = self._signed_request("DELETE", f"/portfolio/orders/{order_id}")
+        return resp is not None
 
     def get_positions(self) -> list:
-        return []
+        resp = self._signed_request("GET", "/portfolio/positions")
+        if not resp:
+            return []
+        return resp.get("market_positions", []) or []
 
     def get_balance(self) -> Optional[float]:
-        return None
+        """Available balance in dollars (Kalshi returns cents)."""
+        resp = self._signed_request("GET", "/portfolio/balance")
+        if not resp or "balance" not in resp:
+            return None
+        return _to_float(resp.get("balance")) / 100.0
 
     # -- Market scanning --
     def scan_markets_with_prices(self, limit=30) -> list:
