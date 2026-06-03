@@ -146,3 +146,23 @@ def test_live_trader_propagates_broker_failure():
     lt.enable()
     out = lt.execute(OPP, 10.0)
     assert out.get("error")
+
+
+# --- Tolerant key loading (recovers from copy-paste that drops PEM armor) ---
+
+def test_bare_pkcs1_body_without_armor_still_loads(rsa_keypair):
+    """A key body pasted WITHOUT -----BEGIN/END----- lines must still load."""
+    key, _pem = rsa_keypair
+    pkcs1 = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,  # PKCS#1 "RSA PRIVATE KEY"
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    # Strip the armor lines, leaving only the base64 body (the paste mistake).
+    body = "\n".join(
+        ln for ln in pkcs1.splitlines() if ln and "-----" not in ln
+    )
+    assert "BEGIN" not in body
+    c = KalshiConnector({"access_key": "key-id", "private_key": body})
+    assert c.has_trading_auth() is True          # recovered the framing
+    assert c._signed_headers("GET", "/portfolio/balance")["KALSHI-ACCESS-SIGNATURE"]

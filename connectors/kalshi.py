@@ -26,6 +26,34 @@ def _to_float(x, default=0.0):
         return default
 
 
+def _load_private_key_tolerant(pem):
+    """Load an RSA private key from PEM, tolerating common env-var paste damage.
+
+    Accepts: a full PEM (with armor), OR a bare base64 key body that lost its
+    -----BEGIN/END----- lines during copy-paste. For a bare body we try the
+    standard armors (PKCS#1 RSA, then PKCS#8, then EC) and use whichever
+    deserializes. Never weakens auth -- it only restores framing the key
+    already had.
+    """
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+    text = (pem.decode() if isinstance(pem, bytes) else pem).strip()
+    candidates = []
+    if "BEGIN" in text:
+        candidates.append(text)
+    else:
+        for hdr in ("RSA PRIVATE KEY", "PRIVATE KEY", "EC PRIVATE KEY"):
+            candidates.append(f"-----BEGIN {hdr}-----\n{text}\n-----END {hdr}-----\n")
+
+    last_err = None
+    for cand in candidates:
+        try:
+            return load_pem_private_key(cand.encode(), password=None)
+        except Exception as e:  # try the next framing
+            last_err = e
+    raise last_err if last_err else ValueError("empty private key")
+
+
 class KalshiConnector:
     """Unified interface to Kalshi's public API (paper-mode safe, no auth needed)."""
 
@@ -47,12 +75,7 @@ class KalshiConnector:
         pem = config.get("private_key", "") or ""
         if self.access_key and pem:
             try:
-                from cryptography.hazmat.primitives.serialization import (
-                    load_pem_private_key,
-                )
-                self._private_key = load_pem_private_key(
-                    pem.encode() if isinstance(pem, str) else pem, password=None
-                )
+                self._private_key = _load_private_key_tolerant(pem)
                 logger.info("Kalshi: trading auth configured (RSA key loaded)")
             except Exception as e:
                 logger.error(
