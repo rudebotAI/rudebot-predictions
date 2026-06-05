@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 
+# Network behaviour: a single transient timeout must never permanently
+# disable alerts (it silently killed all live-trade confirms in prod).
+HTTP_TIMEOUT = 10        # seconds; was 3, too aggressive for Telegram's API
+RETRY_COOLDOWN = 60.0    # seconds to back off after a failure before retrying
+
 
 class TelegramAlerts:
     """Telegram bot for trade alerts and commands."""
@@ -26,13 +31,35 @@ class TelegramAlerts:
         self.pending_confirms = {}  # callback_data -> opportunity+sizing
         self.confirmed = []   # Confirmed trade IDs
         self.skipped = []     # Skipped trade IDs
-        self._api_reachable = None  # None=untested, True/False=cached
+        self._fail_count = 0      # consecutive API failures
+        self._last_fail_ts = 0.0  # monotonic ts of most recent failure
 
     def is_configured(self) -> bool:
         return bool(self.token and self.chat_id)
 
+    def _in_cooldown(self) -> bool:
+        """True while backing off after a recent failure. Unlike the old
+        permanent _api_reachable=False latch, this always recovers."""
+        if self._fail_count == 0:
+            return False
+        return (time.monotonic() - self._last_fail_ts) < RETRY_COOLDOWN
+
+    def _record_success(self):
+        if self._fail_count:
+            logger.info(f"Telegram API recovered after {self._fail_count} failure(s)")
+        self._fail_count = 0
+
+    def _record_failure(self, method: str, e: Exception):
+        self._fail_count += 1
+        self._last_fail_ts = time.monotonic()
+        logger.warning(
+            f"Telegram {method} failed (consecutive failures: {self._fail_count}, "
+            f"retrying after {RETRY_COOLDOWN:.0f}s cooldown): {e}"
+        )
+
     def _post(self, method: str, data: dict) -> dict:
-        if self._api_reachable is False:
+        if self._in_cooldown():
+            logger.debug(f"Telegram {method} skipped -- in failure cooldown")
             return {}
         url = TG_API.format(token=self.token, method=method)
         body = json.dumps(data).encode()
@@ -42,30 +69,27 @@ class TelegramAlerts:
         }
         try:
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                self._api_reachable = True
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                self._record_success()
                 return json.loads(resp.read().decode())
         except Exception as e:
-            if self._api_reachable is None:
-                self._api_reachable = False
-                logger.warning(f"Telegram API unreachable -- skipping: {e}")
+            self._record_failure(method, e)
             return {}
 
     def _get(self, method: str, params: str = "") -> dict:
-        if self._api_reachable is False:
+        if self._in_cooldown():
+            logger.debug(f"Telegram {method} skipped -- in failure cooldown")
             return {}
         url = TG_API.format(token=self.token, method=method) + ("?" + params if params else "")
         try:
             req = urllib.request.Request(url, headers={
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             })
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                self._api_reachable = True
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                self._record_success()
                 return json.loads(resp.read().decode())
         except Exception as e:
-            if self._api_reachable is None:
-                self._api_reachable = False
-                logger.warning(f"Telegram API unreachable -- skipping: {e}")
+            self._record_failure(method, e)
             return {}
 
     def send(self, text: str, reply_markup=None) -> dict:
@@ -125,9 +149,16 @@ class TelegramAlerts:
             msg += "<i>Auto-executing (confirm disabled)</i>"
             markup = None
 
-        self.send(msg, markup)
+        resp = self.send(msg, markup)
+        if not resp.get("ok"):
+            # Surface the failure instead of silently pretending the confirm
+            # request went out -- caller logs and retries next scan cycle.
+            raise RuntimeError(
+                f"Telegram confirm request NOT delivered for {question!r} "
+                f"(api response: {resp or 'no response / network failure'})"
+            )
 
-        # Store for callback handling
+        # Store for callback handling (only after confirmed delivery)
         self.pending_confirms[f"confirm_{cb_id}"] = {"opp": opp, "sizing": sizing}
         self.pending_confirms[f"skip_{cb_id}"] = {"opp": opp, "sizing": sizing}
 
