@@ -55,6 +55,7 @@ class RiskConfig:
     cooldown_seconds: int = 300
     min_ev_threshold: float = 0.05
     min_edge_bps: int = 200
+    max_days_to_resolution: int = 90
 
 
 @dataclass
@@ -120,6 +121,8 @@ def load_config(config_path: str = None) -> BotConfig:
         cfg.risk.max_open_positions = int(os.getenv("MAX_OPEN_POSITIONS"))
     if os.getenv("KELLY_FRACTION"):
         cfg.risk.kelly_fraction = float(os.getenv("KELLY_FRACTION"))
+    if os.getenv("MAX_DAYS_TO_RESOLUTION"):
+        cfg.risk.max_days_to_resolution = int(os.getenv("MAX_DAYS_TO_RESOLUTION"))
 
     # Validate critical config
     _validate(cfg)

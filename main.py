@@ -92,6 +92,7 @@ class PredMarketBot:
         self.scanner = EVScanner({
             "min_ev_threshold": self.config.risk.min_ev_threshold,
             "min_market_volume": 100,
+            "max_days_to_resolution": self.config.risk.max_days_to_resolution,
         })
         self.paper = PaperTrader(
             self.config.__dict__ if hasattr(self.config, "__dict__") else {}

@@ -119,6 +119,13 @@ class TelegramAlerts:
             f"<b>Platform:</b> {platform.title()}\n"
             f"<b>Signal:</b> {signal} @ {price:.3f}\n"
             f"<b>EV:</b> {ev:.3f} | <b>Edge:</b> {edge:.3f}\n"
+        )
+        if opp.get("days_to_resolution") is not None:
+            msg += (
+                f"<b>Resolves in:</b> {opp['days_to_resolution']:.0f}d "
+                f"| <b>EV/yr:</b> {opp.get('ev_annualized', 0):.2f}\n"
+            )
+        msg += (
             f"{'─' * 32}\n"
             f"<b>Kelly says:</b> ${sizing.get('size_usd', 0):.2f} "
             f"({sizing.get('shares', 0):.1f} shares)\n"

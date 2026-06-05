@@ -14,6 +14,7 @@ Probability model uses multiple independent signals:
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,28 @@ logger = logging.getLogger(__name__)
 # come back at the cap, which would indicate a real upstream bug.
 EV_CLAMP_MAX = 5.0
 
+# Kalshi trading fee: 0.07 * price * (1 - price) dollars per contract.
+# Edges smaller than the fee are structurally net-negative -- ignoring
+# this systematically overrates longshots and coin-flip markets.
+KALSHI_FEE_RATE = 0.07
+
+
+def parse_days_to_resolution(end_date: str) -> Optional[float]:
+    """
+    Days from now until the market's close/resolution time.
+    Accepts ISO-8601 (Kalshi close_time, e.g. '2026-09-01T15:00:00Z').
+    Returns None if missing/unparseable.
+    """
+    if not end_date:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(end_date).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (dt - datetime.now(timezone.utc)).total_seconds() / 86400.0
+    except (ValueError, TypeError):
+        return None
+
 
 class EVScanner:
     """Scans prediction markets for +EV opportunities."""
@@ -33,14 +56,20 @@ class EVScanner:
     def __init__(self, config: dict):
         self.min_ev = config.get("min_ev_threshold", 0.05)
         self.min_volume = config.get("min_market_volume", 5000)
+        # Markets resolving further out than this are skipped entirely:
+        # a +EV position that pays out in 2045 is dead capital, and edge
+        # estimates degrade with horizon anyway.
+        self.max_days_to_resolution = config.get("max_days_to_resolution", 90)
+        self.fee_rate = config.get("fee_rate", KALSHI_FEE_RATE)
 
     def compute_ev(self, model_prob: float, market_price: float) -> float:
         """
-        Expected value per dollar staked.
+        Fee-adjusted expected value per dollar staked.
 
-        Args:
-            model_prob: Estimated true probability (0-1)
-            market_price: Current market price (0-1)
+        Per contract: cost = market_price, payout = 1 if win, and the
+        exchange charges fee_rate * price * (1 - price) on entry. EV per
+        dollar = (p_true - price - fee) / price. Edges below the fee floor
+        come back as 0 (no opportunity).
 
         Returns:
             EV as a float, clamped to [0, EV_CLAMP_MAX]. Negative edges
@@ -49,8 +78,10 @@ class EVScanner:
         """
         if market_price <= 0 or market_price >= 1:
             return 0.0
-        payout = 1.0 / market_price
-        ev = (model_prob - market_price) * payout
+        fee = self.fee_rate * market_price * (1.0 - market_price)
+        ev = (model_prob - market_price - fee) / market_price
+        if ev < 0:
+            return 0.0
         if ev > EV_CLAMP_MAX:
             logger.debug(
                 "compute_ev: clamping EV %.3f to %.3f (market_price=%.4f model_prob=%.4f)",
@@ -146,6 +177,8 @@ class EVScanner:
             Sorted list of opportunities with EV > threshold.
         """
         opportunities = []
+        skipped_horizon = 0
+        skipped_no_date = 0
 
         for m in markets:
             yes_price = m.get("yes_price")
@@ -158,6 +191,15 @@ class EVScanner:
             if volume < self.min_volume:
                 continue
 
+            # ── Resolution-horizon gate ──
+            days = parse_days_to_resolution(m.get("end_date"))
+            if days is None:
+                skipped_no_date += 1
+                continue
+            if days <= 0 or days > self.max_days_to_resolution:
+                skipped_horizon += 1
+                continue
+
             model_prob = self.estimate_true_prob(m)
             if model_prob is None:
                 continue
@@ -168,11 +210,18 @@ class EVScanner:
                 model_no = 1 - model_prob
                 ev_no = self.compute_ev(model_no, no_price)
 
+            # Annualized EV: EV per unit time. A 5% edge resolving next
+            # week beats a 20% edge resolving next year. Floor at 1 day
+            # to avoid same-day blowup (resolution_sniper owns that zone).
+            ann_factor = 365.0 / max(days, 1.0)
+
             if ev_yes > ev_no and ev_yes > self.min_ev:
                 opportunities.append({
                     **m,
                     "signal": "YES",
                     "ev": ev_yes,
+                    "ev_annualized": round(ev_yes * ann_factor, 4),
+                    "days_to_resolution": round(days, 1),
                     "model_prob": model_prob,
                     "market_price": yes_price,
                     "edge": round(model_prob - yes_price, 4),
@@ -182,12 +231,22 @@ class EVScanner:
                     **m,
                     "signal": "NO",
                     "ev": ev_no,
+                    "ev_annualized": round(ev_no * ann_factor, 4),
+                    "days_to_resolution": round(days, 1),
                     "model_prob": 1 - model_prob,
                     "market_price": no_price,
                     "edge": round((1 - model_prob) - no_price, 4),
                 })
 
-        opportunities.sort(key=lambda x: x["ev"], reverse=True)
+        if skipped_horizon or skipped_no_date:
+            logger.info(
+                f"Scanner horizon gate: skipped {skipped_horizon} markets resolving "
+                f">{self.max_days_to_resolution}d out (or already closed), "
+                f"{skipped_no_date} with missing/unparseable close time"
+            )
+
+        # Rank by capital efficiency (annualized EV), not raw EV.
+        opportunities.sort(key=lambda x: x["ev_annualized"], reverse=True)
         return opportunities
 
     def cross_reference_markets(self, poly_markets: list, kalshi_markets: list) -> list:
