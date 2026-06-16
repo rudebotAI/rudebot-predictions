@@ -1,0 +1,7 @@
+# Live config overrides applied on top of code defaults (env_config.py).
+# Recalibrates the +EV acceptance bar after the Jun 2026 fee-adjusted EV change
+# (engines/scanner.py compute_ev) left min_ev_threshold=0.05 effectively
+# unreachable. Env vars still override these. Trades remain Telegram-gated.
+risk:
+  min_ev_threshold: 0.03
+  
