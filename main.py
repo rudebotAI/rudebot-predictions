@@ -18,6 +18,7 @@ from pathlib import Path
 import dashboard
 from connectors.kalshi import KalshiConnector
 from engines.scanner import EVScanner
+from engines.cross_reference import enrich_with_cross_reference
 from env_config import load_config
 from execution.paper import PaperTrader
 from execution.live import LiveTrader
@@ -244,6 +245,7 @@ class PredMarketBot:
                 self._errors.append(msg)
 
         self._last_kalshi_count = k_count
+        p_count = enrich_with_cross_reference(markets, self.config, logger)
         self._last_poly_count = p_count
 
         if not markets:
