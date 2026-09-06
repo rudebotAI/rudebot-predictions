@@ -3,7 +3,7 @@ Environment-aware configuration loader for PredictionBot.
 Loads secrets from environment variables (or .env file),
 strategy/risk params from config.yaml.
 
-v4.1 — Secrets never touch config files.
+v6 — Secrets never touch config files; all RiskConfig fields are YAML/env tunable.
 """
 
 import os
@@ -47,15 +47,33 @@ class TelegramSecrets:
 
 @dataclass
 class RiskConfig:
-    max_daily_loss_usd: float = 100.0
-    max_position_usd: float = 50.0
+    # Hard caps (defaults match README/SAFETY.md -- small until paper proves edge)
+    max_daily_loss_usd: float = 20.0
+    max_position_usd: float = 10.0
     max_open_positions: int = 5
     max_consecutive_losses: int = 3
-    kelly_fraction: float = 0.25
     cooldown_seconds: int = 300
+    # Sizing: fractional Kelly on the bankroll, capped by max_position_usd
+    kelly_fraction: float = 0.25
+    bankroll_usd: float = 500.0          # paper bankroll; live uses Kalshi balance
+    max_portfolio_pct: float = 0.05      # single position <= 5% of bankroll
+    max_event_exposure_usd: float = 20.0 # correlated legs of one event share this
+    # Edge gates (6-stage framework: edge threshold 0.04)
     min_ev_threshold: float = 0.05
-    min_edge_bps: int = 200
+    min_edge_bps: int = 400              # 0.04 probability edge after fees
     max_days_to_resolution: int = 90
+    # Drawdown circuit breaker (sticky halt; /resume to clear)
+    max_drawdown_pct: float = 0.08
+    # Live execution guards (yes-leg dollars)
+    max_spread: float = 0.05
+    slippage: float = 0.01
+    # Exit discipline on marked positions (fraction of entry)
+    stop_loss_pct: float = -0.50
+    take_profit_pct: float = 1.00
+
+    @property
+    def min_edge(self) -> float:
+        return self.min_edge_bps / 10000.0
 
 
 @dataclass
@@ -123,6 +141,14 @@ def load_config(config_path: str = None) -> BotConfig:
         cfg.risk.kelly_fraction = float(os.getenv("KELLY_FRACTION"))
     if os.getenv("MAX_DAYS_TO_RESOLUTION"):
         cfg.risk.max_days_to_resolution = int(os.getenv("MAX_DAYS_TO_RESOLUTION"))
+    if os.getenv("BANKROLL_USD"):
+        cfg.risk.bankroll_usd = float(os.getenv("BANKROLL_USD"))
+    if os.getenv("MIN_EDGE_BPS"):
+        cfg.risk.min_edge_bps = int(os.getenv("MIN_EDGE_BPS"))
+    if os.getenv("MAX_DRAWDOWN_PCT"):
+        cfg.risk.max_drawdown_pct = float(os.getenv("MAX_DRAWDOWN_PCT"))
+    if os.getenv("MAX_EVENT_EXPOSURE_USD"):
+        cfg.risk.max_event_exposure_usd = float(os.getenv("MAX_EVENT_EXPOSURE_USD"))
 
     # Validate critical config
     _validate(cfg)
@@ -134,21 +160,25 @@ def _apply_yaml(cfg: BotConfig, raw: dict):
     """Apply YAML values to config (strategy/risk params only)."""
     cfg.mode = raw.get("mode", cfg.mode)
     cfg.scan_interval = raw.get("scan_interval", cfg.scan_interval)
-    cfg.auto_trade = raw.get("auto_wayv", raw.get("auto_trade", cfg.auto_trade))
+    cfg.auto_trade = raw.get("auto_trade", cfg.auto_trade)
     cfg.platforms = raw.get("platforms", cfg.platforms)
     cfg.research_sources = raw.get("research_sources", cfg.research_sources)
 
-    # Risk params from YAML
-    risk_raw = raw.get("risk", {})
-    if risk_raw:
-        cfg.risk.max_daily_loss_usd = risk_raw.get("max_daily_loss_usd", cfg.risk.max_daily_loss_usd)
-        cfg.risk.max_position_usd = risk_raw.get("max_position_usd", cfg.risk.max_position_usd)
-        cfg.risk.max_open_positions = risk_raw.get("max_open_positions", cfg.risk.max_open_positions)
-        cfg.risk.max_consecutive_losses = risk_raw.get("max_consecutive_losses", cfg.risk.max_consecutive_losses)
-        cfg.risk.kelly_fraction = risk_raw.get("kelly_fraction", cfg.risk.kelly_fraction)
-        cfg.risk.cooldown_seconds = risk_raw.get("cooldown_seconds", cfg.risk.cooldown_seconds)
-        cfg.risk.min_ev_threshold = risk_raw.get("min_ev_threshold", cfg.risk.min_ev_threshold)
-        cfg.risk.min_edge_bps = risk_raw.get("min_edge_bps", cfg.risk.min_edge_bps)
+    # Risk params from YAML. Any RiskConfig field may appear under `risk:`;
+    # `strategy:` is accepted as a legacy alias (older config.yaml.example).
+    merged = {}
+    for section in ("strategy", "risk"):
+        block = raw.get(section) or {}
+        if isinstance(block, dict):
+            merged.update(block)
+    if merged:
+        for key in RiskConfig.__dataclass_fields__:
+            if key in merged and merged[key] is not None:
+                current = getattr(cfg.risk, key)
+                try:
+                    setattr(cfg.risk, key, type(current)(merged[key]))
+                except (TypeError, ValueError):
+                    logger.warning(f"CONFIG: ignoring risk.{key}={merged[key]!r} (bad type)")
 
 
 def _validate(cfg: BotConfig):
@@ -172,6 +202,10 @@ def _validate(cfg: BotConfig):
 
     if cfg.risk.kelly_fraction > 0.5:
         warnings.append(f"Kelly fraction {cfg.risk.kelly_fraction} is aggressive (>0.5)")
+    if cfg.risk.min_edge < 0.02:
+        warnings.append(f"min_edge {cfg.risk.min_edge:.3f} is below Kalshi's fee floor at mid prices")
+    if cfg.risk.max_drawdown_pct <= 0:
+        warnings.append("max_drawdown_pct is 0 -- drawdown circuit breaker disabled")
 
     for w in warnings:
         logger.warning(f"CONFIG: {w}")

@@ -18,7 +18,7 @@ class TestConfigLoader:
             from env_config import load_config
             cfg = load_config("/nonexistent/config.yaml")
             assert cfg.mode == "paper"
-            assert cfg.risk.max_daily_loss_usd == 100.0
+            assert cfg.risk.max_daily_loss_usd == 20.0
             assert cfg.risk.kelly_fraction == 0.25
 
     def test_env_overrides(self):
