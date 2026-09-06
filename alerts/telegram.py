@@ -257,6 +257,13 @@ class TelegramAlerts:
         for update in result.get("result", []):
             self.offset = update["update_id"] + 1
 
+            # AUTH: only the configured chat may confirm trades or issue
+            # commands. Telegram bots are discoverable by username, so without
+            # this anyone could press "Confirm Trade" or send /resume.
+            if not self._authorized(update):
+                self._reject_unauthorized(update)
+                continue
+
             # Handle button press
             cb = update.get("callback_query")
             if cb:
@@ -307,6 +314,31 @@ class TelegramAlerts:
                 )
 
         return confirmed_trades
+
+    def _authorized(self, update: dict) -> bool:
+        """True only when BOTH the sender and the chat match the configured
+        chat_id (a private chat with the owner: chat.id == from.id)."""
+        want = str(self.chat_id).strip()
+        if not want:
+            return False
+        cb = update.get("callback_query")
+        if cb:
+            sender = str((cb.get("from") or {}).get("id", ""))
+            chat = str(((cb.get("message") or {}).get("chat") or {}).get("id", ""))
+            return sender == want and chat == want
+        msg = update.get("message")
+        if msg:
+            sender = str((msg.get("from") or {}).get("id", ""))
+            chat = str((msg.get("chat") or {}).get("id", ""))
+            return sender == want and chat == want
+        return False
+
+    def _reject_unauthorized(self, update: dict) -> None:
+        cb = update.get("callback_query")
+        who = ((cb or update.get("message") or {}).get("from") or {}).get("id", "?")
+        logger.warning("telegram: ignoring update from unauthorized sender %s", who)
+        if cb and cb.get("id"):
+            self._post("answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Not authorized"})
 
     def drain_skipped(self) -> list:
         """Return and clear opportunities the user skipped since the last poll."""
