@@ -4,6 +4,7 @@ Serves a self-refreshing HTML page and a /state.json endpoint.
 Binds to $PORT (Railway) or 8080 locally.
 Runs in a background thread so the main scan loop keeps going.
 """
+import html
 import json
 import os
 import threading
@@ -78,7 +79,7 @@ def _render_html(s: dict) -> str:
     def _row_pos(p: dict) -> str:
         sig = p.get("signal", "?")
         tag_cls = "tag-yes" if sig == "YES" else "tag-no"
-        q = (p.get("question") or p.get("market_id") or "?")[:70]
+        q = html.escape((p.get("question") or p.get("market_id") or "?")[:70])
         entry = float(p.get("entry_price", 0) or 0)
         size = float(p.get("size_usd", 0) or 0)
         platform = p.get("platform", "?")
@@ -92,7 +93,7 @@ def _render_html(s: dict) -> str:
         pnl = float(t.get("pnl", 0) or 0)
         pnl_pct = float(t.get("pnl_pct", 0) or 0)
         cls = "pnl-pos" if pnl >= 0 else "pnl-neg"
-        q = (t.get("question") or t.get("market_id") or "?")[:70]
+        q = html.escape((t.get("question") or t.get("market_id") or "?")[:70])
         reason = t.get("close_reason", "")
         return (
             f'<div class="card"><span class="{cls}">{"+" if pnl>=0 else ""}${pnl:.2f} '
@@ -102,7 +103,7 @@ def _render_html(s: dict) -> str:
 
     def _row_sig(s_: dict) -> str:
         sig = s_.get("signal", "?")
-        q = (s_.get("question") or "?")[:70]
+        q = html.escape((s_.get("question") or "?")[:70])
         ev = float(s_.get("ev", 0) or 0)
         edge = float(s_.get("edge", 0) or 0)
         size = float(s_.get("size_usd", 0) or 0)

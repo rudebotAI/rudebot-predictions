@@ -1,6 +1,9 @@
 [build]
 builder = "nixpacks"
 
+[build.nixpacksPlan.phases.setup]
+nixPkgs = ["python312"]
+
 [deploy]
 startCommand = "python main.py"
 restartPolicyType = "ON_FAILURE"
