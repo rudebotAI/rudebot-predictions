@@ -29,8 +29,9 @@ class TelegramAlerts:
         self.require_confirm = config.get("require_confirm", True)
         self.offset = 0
         self.pending_confirms = {}  # callback_data -> opportunity+sizing
-        self.confirmed = []   # Confirmed trade IDs
+        self.confirmed = []   # Confirmed trade IDs (legacy, unused)
         self.skipped = []     # Skipped trade IDs
+        self.pending_commands = []  # slash commands awaiting the bot loop
         self._fail_count = 0      # consecutive API failures
         self._last_fail_ts = 0.0  # monotonic ts of most recent failure
 
@@ -216,7 +217,10 @@ class TelegramAlerts:
             f"Best: ${perf.get('best_trade', 0):.2f} | "
             f"Worst: ${perf.get('worst_trade', 0):.2f}\n"
             f"Open: {perf.get('open_positions', 0)}\n"
+            f"Sharpe (per-trade): {perf.get('sharpe')}\n"
             f"{'─' * 32}\n"
+            f"Equity: ${risk_status.get('equity', 0):.2f} | "
+            f"DD: {risk_status.get('drawdown_pct', 0)}%\n"
             f"Daily P&L: ${risk_status.get('daily_pnl', 0):.2f}\n"
             f"Status: {'HALTED' if risk_status.get('halted') else 'Active'}"
         )
@@ -276,6 +280,7 @@ class TelegramAlerts:
                                 "parse_mode": "HTML"
                             })
                     elif data.startswith("skip_"):
+                        self.skipped.append(info)
                         self._post("answerCallbackQuery", {"callback_query_id": cb_query_id, "text": "Skipped"})
                         if msg_id:
                             self._post("editMessageText", {
@@ -289,14 +294,8 @@ class TelegramAlerts:
             # Handle text commands
             message = update.get("message", {})
             text = (message.get("text") or "").strip().lower()
-            if text == "/pnl":
-                self.confirmed.append({"command": "pnl"})
-            elif text == "/status":
-                self.confirmed.append({"command": "status"})
-            elif text == "/resume":
-                self.confirmed.append({"command": "resume"})
-            elif text == "/positions":
-                self.confirmed.append({"command": "positions"})
+            if text in ("/pnl", "/status", "/resume", "/positions"):
+                self.pending_commands.append(text[1:])
             elif text == "/help":
                 self.send(
                     "<b>Commands</b>\n"
@@ -308,3 +307,13 @@ class TelegramAlerts:
                 )
 
         return confirmed_trades
+
+    def drain_skipped(self) -> list:
+        """Return and clear opportunities the user skipped since the last poll."""
+        out, self.skipped = self.skipped, []
+        return out
+
+    def drain_commands(self) -> list:
+        """Return and clear slash commands received since the last poll."""
+        cmds, self.pending_commands = self.pending_commands, []
+        return cmds
