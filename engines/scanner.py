@@ -53,7 +53,15 @@ def parse_days_to_resolution(end_date: str) -> Optional[float]:
 class EVScanner:
     """Scans prediction markets for +EV opportunities."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, model=None):
+        # Predict stage. `model` is a research.calibration.CalibratedModel
+        # fitted on Kalshi's own settled markets; it is the ONLY evidence-based
+        # probability source. The legacy heuristic (volume regression, spread
+        # signal, hard-coded longshot factors) has no validated edge and is
+        # OFF unless config["allow_heuristic"] is true; without a usable
+        # calibration cell the model returns the market price, i.e. no edge.
+        self.model = model
+        self.allow_heuristic = bool(config.get("allow_heuristic", False))
         self.min_ev = config.get("min_ev_threshold", 0.05)
         self.min_volume = config.get("min_market_volume", 5000)
         # Markets resolving further out than this are skipped entirely:
@@ -91,7 +99,28 @@ class EVScanner:
         return round(ev, 4)
 
     def estimate_true_prob(self, market: dict) -> Optional[float]:
+        """Calibrated probability from the research model when a usable
+        (category, horizon) cell exists; otherwise the market price (no edge)
+        unless the legacy heuristic is explicitly enabled."""
+        yes_price = market.get("yes_price")
+        if yes_price is None:
+            return None
+        if self.model is not None:
+            days = parse_days_to_resolution(market.get("expected_expiration") or market.get("end_date"))
+            hours = max(0.25, (days or 0.0) * 24.0)
+            info = self.model.explain(float(yes_price), market.get("category"), hours)
+            market["model_cell"] = info.get("cell")
+            market["model_reason"] = info.get("reason")
+            if info.get("cell"):
+                return round(float(info["model_prob"]), 4)
+        if self.allow_heuristic:
+            return self._heuristic_prob(market)
+        market.setdefault("model_reason", "no usable calibration cell -> market price")
+        return round(float(yes_price), 4)
+
+    def _heuristic_prob(self, market: dict) -> Optional[float]:
         """
+        LEGACY heuristic (no validated edge; off by default).
         Estimate true probability using multiple independent signals.
 
         Signals used:

@@ -15,3 +15,6 @@ venv/
 
 # OS
 .DS_Store
+
+# Research data cache (large; rebuilt by research/kalshi_history.py)
+research/cache/

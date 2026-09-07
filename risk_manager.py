@@ -325,6 +325,21 @@ class RiskManager:
         self._save_state()
         logger.info(f"Risk: Recorded entry {market_id} ({side} {shares}@{entry_price})")
 
+    def release_entry(self, market_id: str):
+        """Drop a reservation made for a resting order that never filled.
+        Exposure is freed; no trade is counted, no streak/P&L is touched."""
+        if self._open_positions.pop(market_id, None) is not None:
+            self._trade_count = max(0, self._trade_count - 1)
+            self._save_state()
+            logger.info(f"Risk: released unfilled reservation {market_id}")
+
+    def resize_entry(self, market_id: str, entry_price: float, shares: float, position_usd: float):
+        """A resting order filled for less than reserved: shrink the record."""
+        pos = self._open_positions.get(market_id)
+        if pos:
+            pos.update({"entry_price": entry_price, "shares": shares, "position_usd": position_usd})
+            self._save_state()
+
     def record_partial_exit(self, market_id: str, pnl: float, stake_closed: float = 0.0):
         """Book realized P&L from a partial exit; the position stays open."""
         self._daily_loss += min(0, pnl)

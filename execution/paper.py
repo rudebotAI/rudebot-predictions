@@ -103,6 +103,9 @@ class PaperTrader:
             "kelly_fractional": opportunity.get("kelly_fractional", 0),
             "market_id": opportunity.get("market_id", ""),
             "event_ticker": opportunity.get("event_ticker", ""),
+            "category": opportunity.get("category", ""),
+            "model_cell": opportunity.get("model_cell"),
+            "model_reason": opportunity.get("model_reason", ""),
             "order_id": order_id,
             "status": "open",
         }

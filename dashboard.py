@@ -5,6 +5,7 @@ Binds to $PORT (Railway) or 8080 locally.
 Runs in a background thread so the main scan loop keeps going.
 """
 import html
+import time
 import json
 import os
 import threading
@@ -113,6 +114,41 @@ def _render_html(s: dict) -> str:
             f' <small>&middot; Edge {edge:.3f} &middot; ${size:.2f}</small></div>'
         )
 
+    def _row_rest(r: dict) -> str:
+        sig = r.get("signal", "?")
+        tag_cls = "tag-yes" if sig == "YES" else "tag-no"
+        q = html.escape(((r.get("opp") or {}).get("question") or r.get("market_id") or "?")[:70])
+        left = max(0, int(float(r.get("expires_ts", 0) or 0) - time.time()))
+        return (
+            f'<div class="card"><span class="tag {tag_cls}">{sig}</span>'
+            f'<strong>{q}</strong><br><small>{r.get("mode")} &middot; resting {r.get("contracts")}x @ '
+            f'{float(r.get("price", 0) or 0):.3f} (${float(r.get("size_usd", 0) or 0):.2f}) &middot; '
+            f'expires in {left // 60}m</small></div>'
+        )
+
+    model = s.get("model") or {}
+    cal = s.get("calibration") or {}
+    rest_sum = s.get("resting_summary") or {}
+    resting = s.get("resting_orders") or []
+    entry_style = s.get("entry_style", "maker")
+    cells = model.get("cells_used") or []
+    model_line = (
+        f'loaded {html.escape(str(model.get("generated") or "?"))[:19]} &middot; {model.get("n_rows", 0)} settled markets &middot; '
+        f'{len(cells)} usable cells: {html.escape(", ".join(cells)) or "none"}'
+        if model.get("loaded") else
+        '<span style="color:#f87171">MISSING</span> &middot; no edge source: the bot scans but cannot find edge until '
+        '<code>models/calibration.json</code> is built (research/calibration.py)'
+    )
+    if cal.get("n"):
+        cal_line = (f'{cal["n"]} resolved &middot; Brier model {cal.get("brier_model")} vs market {cal.get("brier_market")} '
+                    f'&middot; {"model adds skill" if cal.get("brier_model", 1) < cal.get("brier_market", 0) else "model NOT beating the market yet"}')
+    else:
+        cal_line = "no resolved positions yet"
+    exec_line = (f'{entry_style} &middot; {rest_sum.get("resting", 0)} resting &middot; '
+                 f'{rest_sum.get("filled", 0)}/{rest_sum.get("settled", 0)} filled'
+                 + (f' ({rest_sum["fill_rate"]:.0%})' if rest_sum.get("fill_rate") is not None else ""))
+    resting_html = "".join(_row_rest(r) for r in resting[:30]) or '<div class="empty">No resting orders</div>'
+
     open_positions = s.get("open_positions") or []
     recent_closed = s.get("recent_closed") or []
     recent_signals = s.get("recent_signals") or []
@@ -193,10 +229,17 @@ a{{color:#7dd3fc}}
   <div class="stat"><div class="num">{ev_n}</div><div class="label">EV Signals (cycle)</div></div>
 </div>
 
-<div class="cols">
-  <div class="section"><h2>Open Positions</h2>{positions_html}</div>
-  <div class="section"><h2>Recent Closed</h2>{closed_html}</div>
+<div class="section"><h2>Predict stage &middot; calibration model</h2>
+  <div class="card">{model_line}</div>
+  <div class="card">Live scoring: {cal_line}</div>
+  <div class="card">Execute stage: {exec_line}</div>
 </div>
+
+<div class="cols">
+  <div class="section"><h2>Resting Orders (post-only)</h2>{resting_html}</div>
+  <div class="section"><h2>Open Positions</h2>{positions_html}</div>
+</div>
+<div class="section"><h2>Recent Closed</h2>{closed_html}</div>
 <div class="section"><h2>Recent Signals</h2>{signals_html}</div>
 {'<div class="section"><h2>Errors</h2>' + errors_html + '</div>' if errors_html else ''}
 <div class="footer">Last scan: {last_scan} &middot; Auto-refresh 10s &middot; <a href="/state.json">state.json</a></div>

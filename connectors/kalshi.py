@@ -453,6 +453,23 @@ class KalshiConnector:
         resp = self._signed_request("DELETE", path)
         return resp is not None
 
+    def find_order_by_client_id(self, market_ticker: str, client_order_id: str) -> Optional[dict]:
+        """Recover an order whose create response was lost: list this
+        market's orders and match client_order_id. Returns get_order()-shaped
+        dict or None."""
+        resp = self._signed_request("GET", f"/portfolio/orders?ticker={market_ticker}&limit=200")
+        if not resp:
+            return None
+        for o in resp.get("orders", []) or []:
+            if o.get("client_order_id") == client_order_id:
+                return {
+                    "order_id": o.get("order_id"), "client_order_id": o.get("client_order_id"),
+                    "status": o.get("status"), "yes_price": _to_float(o.get("yes_price_dollars")),
+                    "fill_count": _to_float(o.get("fill_count_fp")),
+                    "remaining_count": _to_float(o.get("remaining_count_fp")), "raw": o,
+                }
+        return None
+
     def get_positions(self) -> list:
         """Open market positions, normalized to dollars/contracts."""
         resp = self._signed_request("GET", "/portfolio/positions?count_filter=position&limit=200")
@@ -513,6 +530,8 @@ class KalshiConnector:
             event_ticker = ev.get("event_ticker", "")
             if not event_ticker:
                 continue
+            ev_category = ev.get("category") or ""
+            ev_series = ev.get("series_ticker") or ""
             ms = self.get_markets(event_ticker=event_ticker, limit=50)
             if not ms:
                 continue
@@ -567,6 +586,8 @@ class KalshiConnector:
                         "question": m.get("title", "") or m.get("subtitle", "") or market_id,
                         "market_id": market_id,
                         "event_ticker": event_ticker,
+                        "series_ticker": ev_series,
+                        "category": ev_category,
                         "exchange_index": m.get("exchange_index", 0),
                         "yes_price": yes_price,
                         "no_price": no_price,
@@ -581,6 +602,9 @@ class KalshiConnector:
                         "open_interest": oi,
                         "liquidity": liq,
                         "end_date": m.get("close_time", ""),
+                        # Scheduled resolution: the calibration model's horizon
+                        # is measured from this (research uses the same field).
+                        "expected_expiration": m.get("expected_expiration_time") or m.get("close_time", ""),
                         "raw": m,
                     })
                 except Exception as e:
