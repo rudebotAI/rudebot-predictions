@@ -211,7 +211,9 @@ This repo deploys on Railway out of the box:
   market's, resting orders and fill rate.
 - **Telegram**: callbacks and commands are accepted only from the configured
   chat id (previously anyone who found the bot could confirm trades).
-- Weekly GitHub Action refits the calibration model and commits it.
+- Weekly GitHub Action refits the calibration model and commits it. On every
+  boot the bot compares the usable-cell set with the last one it announced and
+  Telegrams you when it changes ("Model ARMED" / "no usable cells").
 - Method and sources: `docs/research/2026-09-06-predict-stage.md`.
 
 ### v6.0 — 2026-09-06
