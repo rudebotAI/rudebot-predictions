@@ -112,6 +112,7 @@ class PredMarketBot:
             "min_market_volume": 100,
             "max_days_to_resolution": rc.max_days_to_resolution,
             "allow_heuristic": bool(getattr(rc, "allow_heuristic", False)),
+            "entry_style": rc.entry_style,
         }, model=self.model)
         self.sizer = KellySizer({
             "kelly_fraction": rc.kelly_fraction,
@@ -622,9 +623,11 @@ class PredMarketBot:
         if not expired and status not in ("closed", "settled", "finalized") \
                 and self.resting.paper_would_fill(row, q["yes_bid"], q["yes_ask"]):
             px = float(row["price"])
+            maker_rate = (row.get("opp") or {}).get("maker_fee_rate")
+            maker_rate = rc.maker_fee_rate if maker_rate is None else float(maker_rate)
             self._book_rest_fill(row, self.paper, "paper: market traded through our price",
                                  filled=row["contracts"], avg_fill=px,
-                                 fee_per_contract=rc.maker_fee_rate * px * (1 - px))
+                                 fee_per_contract=maker_rate * px * (1 - px))
         elif expired or status in ("closed", "settled", "finalized"):
             self.resting.settle(row, "expired", note="no fill before expiry/close")
             self.risk.release_entry(row["market_id"])

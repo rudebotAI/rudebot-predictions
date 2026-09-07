@@ -69,8 +69,19 @@ class EVScanner:
         # estimates degrade with horizon anyway.
         self.max_days_to_resolution = config.get("max_days_to_resolution", 90)
         self.fee_rate = config.get("fee_rate", KALSHI_FEE_RATE)
+        # "maker" entries pay the series' maker rate (0 in most series);
+        # "taker" entries pay the taker rate. Per-market rates come from the
+        # connector; the config default is the fallback.
+        self.entry_style = str(config.get("entry_style", "taker")).lower()
 
-    def compute_ev(self, model_prob: float, market_price: float) -> float:
+    def fee_rate_for(self, market: dict) -> float:
+        if self.entry_style == "maker":
+            r = market.get("maker_fee_rate")
+            return float(r) if r is not None else 0.0
+        r = market.get("taker_fee_rate")
+        return float(r) if r is not None else self.fee_rate
+
+    def compute_ev(self, model_prob: float, market_price: float, fee_rate: Optional[float] = None) -> float:
         """
         Fee-adjusted expected value per dollar staked.
 
@@ -86,7 +97,8 @@ class EVScanner:
         """
         if market_price <= 0 or market_price >= 1:
             return 0.0
-        fee = self.fee_rate * market_price * (1.0 - market_price)
+        rate = self.fee_rate if fee_rate is None else fee_rate
+        fee = rate * market_price * (1.0 - market_price)
         ev = (model_prob - market_price - fee) / market_price
         if ev < 0:
             return 0.0
@@ -233,11 +245,12 @@ class EVScanner:
             if model_prob is None:
                 continue
 
-            ev_yes = self.compute_ev(model_prob, yes_price)
+            fee_rate = self.fee_rate_for(m)
+            ev_yes = self.compute_ev(model_prob, yes_price, fee_rate)
             ev_no = 0.0
             if no_price and no_price > 0 and no_price < 1:
                 model_no = 1 - model_prob
-                ev_no = self.compute_ev(model_no, no_price)
+                ev_no = self.compute_ev(model_no, no_price, fee_rate)
 
             # Annualized EV: EV per unit time. A 5% edge resolving next
             # week beats a 20% edge resolving next year. Floor at 1 day

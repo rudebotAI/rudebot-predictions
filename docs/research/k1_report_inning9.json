@@ -1,0 +1,354 @@
+{
+ "generated": "2026-09-07T01:44:04+00:00",
+ "games": 766,
+ "by_series": {
+  "KXMLBGAME": 766,
+  "KXNBAGAME": 0,
+  "KXNHLGAME": 0
+ },
+ "reliability": [
+  {
+   "minutes_to_close": 30,
+   "bucket": "0.50-0.70",
+   "n": 108,
+   "mean_price": 0.5896,
+   "hit_rate": 0.6296
+  },
+  {
+   "minutes_to_close": 30,
+   "bucket": "0.70-0.85",
+   "n": 108,
+   "mean_price": 0.7819,
+   "hit_rate": 0.8519
+  },
+  {
+   "minutes_to_close": 30,
+   "bucket": "0.85-0.95",
+   "n": 193,
+   "mean_price": 0.9004,
+   "hit_rate": 0.9482
+  },
+  {
+   "minutes_to_close": 30,
+   "bucket": "0.95-1.00",
+   "n": 331,
+   "mean_price": 0.9792,
+   "hit_rate": 0.9909
+  },
+  {
+   "minutes_to_close": 20,
+   "bucket": "0.50-0.70",
+   "n": 87,
+   "mean_price": 0.6003,
+   "hit_rate": 0.7701
+  },
+  {
+   "minutes_to_close": 20,
+   "bucket": "0.70-0.85",
+   "n": 62,
+   "mean_price": 0.7995,
+   "hit_rate": 0.8871
+  },
+  {
+   "minutes_to_close": 20,
+   "bucket": "0.85-0.95",
+   "n": 184,
+   "mean_price": 0.9009,
+   "hit_rate": 0.962
+  },
+  {
+   "minutes_to_close": 20,
+   "bucket": "0.95-1.00",
+   "n": 431,
+   "mean_price": 0.9807,
+   "hit_rate": 0.9884
+  },
+  {
+   "minutes_to_close": 10,
+   "bucket": "0.50-0.70",
+   "n": 32,
+   "mean_price": 0.6197,
+   "hit_rate": 0.75
+  },
+  {
+   "minutes_to_close": 10,
+   "bucket": "0.70-0.85",
+   "n": 68,
+   "mean_price": 0.7851,
+   "hit_rate": 0.9559
+  },
+  {
+   "minutes_to_close": 10,
+   "bucket": "0.85-0.95",
+   "n": 162,
+   "mean_price": 0.9017,
+   "hit_rate": 0.9877
+  },
+  {
+   "minutes_to_close": 10,
+   "bucket": "0.95-1.00",
+   "n": 504,
+   "mean_price": 0.9825,
+   "hit_rate": 0.994
+  },
+  {
+   "minutes_to_close": 5,
+   "bucket": "0.50-0.70",
+   "n": 8,
+   "mean_price": 0.625,
+   "hit_rate": 0.875
+  },
+  {
+   "minutes_to_close": 5,
+   "bucket": "0.70-0.85",
+   "n": 10,
+   "mean_price": 0.787,
+   "hit_rate": 0.9
+  },
+  {
+   "minutes_to_close": 5,
+   "bucket": "0.85-0.95",
+   "n": 34,
+   "mean_price": 0.9059,
+   "hit_rate": 0.9412
+  },
+  {
+   "minutes_to_close": 5,
+   "bucket": "0.95-1.00",
+   "n": 714,
+   "mean_price": 0.9884,
+   "hit_rate": 1.0
+  },
+  {
+   "minutes_to_close": 2,
+   "bucket": "0.50-0.70",
+   "n": 1,
+   "mean_price": 0.62,
+   "hit_rate": 1.0
+  },
+  {
+   "minutes_to_close": 2,
+   "bucket": "0.85-0.95",
+   "n": 1,
+   "mean_price": 0.92,
+   "hit_rate": 1.0
+  },
+  {
+   "minutes_to_close": 2,
+   "bucket": "0.95-1.00",
+   "n": 764,
+   "mean_price": 0.99,
+   "hit_rate": 1.0
+  },
+  {
+   "minutes_to_close": 1,
+   "bucket": "0.95-1.00",
+   "n": 766,
+   "mean_price": 0.99,
+   "hit_rate": 1.0
+  }
+ ],
+ "strategy_maker": {
+  "games": 766,
+  "attempted": 739,
+  "filled": 293,
+  "fill_rate": 0.396,
+  "win_rate": 0.956,
+  "net_per_dollar": 0.0985,
+  "net_per_dollar_fills_haircut_50": 0.0985,
+  "avg_bid": 0.8691,
+  "slices": [
+   {
+    "slice": "2026-07a",
+    "n": 22,
+    "net_per_dollar": 0.152
+   },
+   {
+    "slice": "2026-07b",
+    "n": 79,
+    "net_per_dollar": 0.0746
+   },
+   {
+    "slice": "2026-08a",
+    "n": 67,
+    "net_per_dollar": 0.1335
+   },
+   {
+    "slice": "2026-08b",
+    "n": 92,
+    "net_per_dollar": 0.0814
+   },
+   {
+    "slice": "2026-09a",
+    "n": 33,
+    "net_per_dollar": 0.0974
+   }
+  ]
+ },
+ "strategy_maker_lenient_fills": {
+  "games": 766,
+  "attempted": 739,
+  "filled": 412,
+  "fill_rate": 0.558,
+  "win_rate": 0.968,
+  "net_per_dollar": 0.0925,
+  "net_per_dollar_fills_haircut_50": 0.0925,
+  "avg_bid": 0.8857,
+  "slices": [
+   {
+    "slice": "2026-07a",
+    "n": 27,
+    "net_per_dollar": 0.1335
+   },
+   {
+    "slice": "2026-07b",
+    "n": 113,
+    "net_per_dollar": 0.0829
+   },
+   {
+    "slice": "2026-08a",
+    "n": 102,
+    "net_per_dollar": 0.1134
+   },
+   {
+    "slice": "2026-08b",
+    "n": 118,
+    "net_per_dollar": 0.0767
+   },
+   {
+    "slice": "2026-09a",
+    "n": 52,
+    "net_per_dollar": 0.087
+   }
+  ]
+ },
+ "strategy_taker_reference": {
+  "games": 766,
+  "attempted": 739,
+  "filled": 293,
+  "fill_rate": 0.396,
+  "win_rate": 0.956,
+  "net_per_dollar": 0.0954,
+  "net_per_dollar_fills_haircut_50": 0.0954,
+  "avg_bid": 0.8691,
+  "slices": [
+   {
+    "slice": "2026-07a",
+    "n": 22,
+    "net_per_dollar": 0.1488
+   },
+   {
+    "slice": "2026-07b",
+    "n": 79,
+    "net_per_dollar": 0.0715
+   },
+   {
+    "slice": "2026-08a",
+    "n": 67,
+    "net_per_dollar": 0.1303
+   },
+   {
+    "slice": "2026-08b",
+    "n": 92,
+    "net_per_dollar": 0.0784
+   },
+   {
+    "slice": "2026-09a",
+    "n": 33,
+    "net_per_dollar": 0.094
+   }
+  ]
+ },
+ "calibration": {
+  "n": 766,
+  "n_test": 230,
+  "a": 0.1678,
+  "b": 2.1967,
+  "brier_market": 0.03304,
+  "brier_calibrated": 0.02864,
+  "improves": true
+ },
+ "strategy_inning9": {
+  "anchor": "top9_start",
+  "games_with_anchor": 720,
+  "attempted": 677,
+  "filled": 317,
+  "fill_rate": 0.468,
+  "win_rate": 0.921,
+  "net_per_dollar": 0.0144,
+  "avg_bid": 0.9074,
+  "slices": [
+   {
+    "slice": "2026-07a",
+    "n": 29,
+    "net_per_dollar": 0.0452
+   },
+   {
+    "slice": "2026-07b",
+    "n": 76,
+    "net_per_dollar": 0.0136
+   },
+   {
+    "slice": "2026-08a",
+    "n": 77,
+    "net_per_dollar": 0.0434
+   },
+   {
+    "slice": "2026-08b",
+    "n": 94,
+    "net_per_dollar": -0.0178
+   },
+   {
+    "slice": "2026-09a",
+    "n": 41,
+    "net_per_dollar": 0.0137
+   }
+  ]
+ },
+ "strategy_bottom9_robustness": {
+  "anchor": "bot9_start",
+  "games_with_anchor": 387,
+  "attempted": 375,
+  "filled": 183,
+  "fill_rate": 0.488,
+  "win_rate": 0.858,
+  "net_per_dollar": 0.021,
+  "avg_bid": 0.8392,
+  "slices": [
+   {
+    "slice": "2026-07a",
+    "n": 11,
+    "net_per_dollar": 0.1146
+   },
+   {
+    "slice": "2026-07b",
+    "n": 47,
+    "net_per_dollar": -0.0003
+   },
+   {
+    "slice": "2026-08a",
+    "n": 45,
+    "net_per_dollar": 0.0324
+   },
+   {
+    "slice": "2026-08b",
+    "n": 52,
+    "net_per_dollar": 0.0162
+   },
+   {
+    "slice": "2026-09a",
+    "n": 28,
+    "net_per_dollar": 0.0115
+   }
+  ]
+ },
+ "verdict_basis": "strategy_inning9",
+ "gates": {
+  "slices_positive_3_of_4": true,
+  "brier_improves": true,
+  "fill_rate_ge_25pct": true,
+  "net_positive": true,
+  "net_gt_2se": false
+ },
+ "verdict": "FAIL"
+}

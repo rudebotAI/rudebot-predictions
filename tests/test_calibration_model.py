@@ -104,3 +104,21 @@ class TestScannerUsesModel(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSeriesFees(unittest.TestCase):
+    def test_maker_style_uses_market_maker_rate(self):
+        from research.calibration import CalibratedModel, build_model
+        rows = [{"category": "Politics", "close_ts": i, "y": y, "p": {"24": p}} for i, p, y in _cell(1.6)]
+        model = CalibratedModel(build_model(rows, source="t"))
+        end = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat().replace("+00:00", "Z")
+        m = {"yes_price": 0.70, "no_price": 0.30, "volume": 10_000, "end_date": end, "category": "Politics",
+             "question": "q", "market_id": "M", "taker_fee_rate": 0.035, "maker_fee_rate": 0.00875}
+        taker = EVScanner({"min_ev_threshold": 0.0, "min_market_volume": 10, "entry_style": "taker"}, model=model)
+        maker = EVScanner({"min_ev_threshold": 0.0, "min_market_volume": 10, "entry_style": "maker"}, model=model)
+        self.assertAlmostEqual(taker.fee_rate_for(m), 0.035)
+        self.assertAlmostEqual(maker.fee_rate_for(m), 0.00875)
+        self.assertGreater(maker.scan([dict(m)])[0]["ev"], taker.scan([dict(m)])[0]["ev"])
+        # unknown series: maker 0, taker default 0.07
+        self.assertEqual(maker.fee_rate_for({}), 0.0)
+        self.assertEqual(taker.fee_rate_for({}), 0.07)
