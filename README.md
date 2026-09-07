@@ -1,4 +1,4 @@
-# Prediction Market Quant Bot — Kalshi (v6.0)
+# Prediction Market Quant Bot — Kalshi (v6.1)
 
 Scans **Kalshi** prediction markets for +EV opportunities using a quant stack:
 
@@ -192,6 +192,27 @@ This repo deploys on Railway out of the box:
 ---
 
 ## Changelog
+
+### v6.1 — 2026-09-06 (Predict + Execute stages rebuilt on evidence)
+- **Predict**: the heuristic probability model is OFF (`allow_heuristic: false`).
+  The only probability source is a per-(category, horizon) recalibration of
+  Kalshi's own prices fitted on settled markets from the free public API
+  (`research/calibration.py` -> `models/calibration.json`), with an
+  event-grouped holdout, bootstrap CI, and hard gates; cells that do not beat
+  the market's Brier score are never used. No usable cell = no edge = no trade.
+- **Execute**: entries are post-only resting limits at our side's bid with an
+  exchange-side expiry (`entry_style: maker`, `rest_seconds: 1800`) — 0 fee and
+  spread capture, the one structural edge in the maker/taker literature. Paper
+  mode uses a conservative fill rule (filled only when the market trades
+  through our price). Exits remain reduce-only IOC. Crash-safe booking with
+  startup reconciliation; lost-response recovery by client order id.
+- **Scoring**: every resolved position logs (model_prob, entry, outcome) to
+  `logs/calibration.jsonl`; the dashboard shows the model's Brier score vs the
+  market's, resting orders and fill rate.
+- **Telegram**: callbacks and commands are accepted only from the configured
+  chat id (previously anyone who found the bot could confirm trades).
+- Weekly GitHub Action refits the calibration model and commits it.
+- Method and sources: `docs/research/2026-09-06-predict-stage.md`.
 
 ### v6.0 — 2026-09-06
 - **Kalshi V2 orders**: `POST /portfolio/events/orders` with `bid`/`ask`

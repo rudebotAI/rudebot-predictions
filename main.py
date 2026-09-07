@@ -15,6 +15,7 @@ path, record_exit wired (daily-loss / streak / drawdown breakers now fire),
 Telegram commands handled in both modes, --once flag.
 """
 import argparse
+import json
 import asyncio
 import logging
 import time
@@ -24,12 +25,14 @@ from pathlib import Path
 
 import dashboard
 from connectors.kalshi import KalshiConnector
-from engines.scanner import EVScanner
+from engines.scanner import EVScanner, parse_days_to_resolution
+from research.calibration import CalibratedModel
 from engines.sizing import KellySizer
 from engines.cross_reference import enrich_with_cross_reference
 from env_config import load_config
 from execution.paper import PaperTrader
 from execution.live import LiveTrader
+from execution.resting import RestingOrders, own_leg_bid_ask
 from alerts.telegram import TelegramAlerts
 from risk_manager import RiskManager
 
@@ -39,7 +42,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("predbot")
 
-VERSION = "6.0"
+VERSION = "6.1"
 
 
 def _to_float(x, default=0.0):
@@ -97,11 +100,19 @@ class PredMarketBot:
         self.config = load_config()
         self.risk = RiskManager(self.config)
         rc = self.config.risk
+        # Predict stage: calibration model fitted on Kalshi's settled markets
+        # (research/calibration.py). Missing file => no edge, bot idles safely.
+        self.model = CalibratedModel.load()
+        n_cells = self.model.model.get("n_cells_used", 0) if self.model.model else 0
+        logger.info("calibration model: %s (%d usable cells, generated %s)",
+                    "loaded" if self.model.model else "MISSING -> no edge source",
+                    n_cells, self.model.model.get("generated", "-") if self.model.model else "-")
         self.scanner = EVScanner({
             "min_ev_threshold": rc.min_ev_threshold,
             "min_market_volume": 100,
             "max_days_to_resolution": rc.max_days_to_resolution,
-        })
+            "allow_heuristic": bool(getattr(rc, "allow_heuristic", False)),
+        }, model=self.model)
         self.sizer = KellySizer({
             "kelly_fraction": rc.kelly_fraction,
             "max_position_usd": rc.max_position_usd,
@@ -117,6 +128,8 @@ class PredMarketBot:
         self.kalshi = KalshiConnector(
             self.config.kalshi.__dict__ if hasattr(self.config.kalshi, "__dict__") else {}
         )
+        # Execute stage: post-only resting entries (paper sim + live), one ledger.
+        self.resting = RestingOrders("logs/resting_orders.json")
 
         # Telegram confirm/alert channel + live executor.
         self.telegram = TelegramAlerts({
@@ -241,6 +254,32 @@ class PredMarketBot:
             market_id = opp.get("market_id", "unknown")
             # Confirmation consumed; allow this market to be re-offered later.
             self._pending_live.discard(market_id)
+            rc = self.config.risk
+            if rc.entry_style == "maker":
+                ok, why = self._recheck_edge(opp, rc)
+                if not ok:
+                    logger.warning(f"[LIVE] confirm for {market_id} dropped: {why}")
+                    try:
+                        self.telegram.send(f"<b>Not placed</b> -- {market_id}: {why}")
+                    except Exception:
+                        pass
+                    continue
+                result = self.live.execute_maker(opp, size_usd, rc.rest_seconds, nonce=f"{self._scan_number}")
+                if result.get("success"):
+                    self.resting.place(opp, result["price"], result["contracts"], "live", rc.rest_seconds,
+                                       order_id=result.get("order_id"), client_order_id=result.get("client_order_id"))
+                    try:
+                        self.telegram.send(f"<b>Resting</b> {opp.get('signal')} {result['contracts']}x @ "
+                                           f"{result['price']:.2f} on {market_id} (post-only, {rc.rest_seconds}s)")
+                    except Exception:
+                        pass
+                else:
+                    logger.warning(f"[LIVE] resting order not placed for {market_id}: {result.get('error')}")
+                    try:
+                        self.telegram.send(f"<b>Not placed</b> -- {market_id}: {result.get('error')}")
+                    except Exception:
+                        pass
+                continue
             result = self.live.execute(opp, size_usd, nonce=f"{self._scan_number}")
             if result.get("success"):
                 trade = self.live_book.open_position(opp, size_usd, fill=result)
@@ -332,6 +371,16 @@ class PredMarketBot:
             "recent_closed": closed[:25],
             "recent_signals": list(self._recent_signals),
             "errors": list(self._errors),
+            "resting_orders": self.resting.active(),
+            "resting_summary": self.resting.summary(),
+            "entry_style": self.config.risk.entry_style,
+            "model": {
+                "loaded": bool(self.model.model),
+                "generated": self.model.model.get("generated") if self.model.model else None,
+                "n_rows": self.model.model.get("n_rows") if self.model.model else 0,
+                "cells_used": [k for k, c in self.model.cells.items() if c.get("used") and not k.startswith("ALL|")],
+            },
+            "calibration": self._calibration_stats(),
         }
 
     # ------------------------------------------------------------------
@@ -466,6 +515,214 @@ class PredMarketBot:
             logger.debug(f"trade-closed notify failed: {e}")
         return True
 
+    # ------------------------------------------------------------------
+    # Execute stage: post-only resting entries
+    # ------------------------------------------------------------------
+    def _paper_rest(self, opp: dict, size: float, side: str, rc) -> bool:
+        """Paper: rest at our side's bid. Nothing is booked until a later poll
+        shows the market traded through our price (conservative fill model)."""
+        market_id = opp.get("market_id", "")
+        if self.resting.has_market(market_id, "paper"):
+            return False
+        yes_bid, yes_ask = _to_float(opp.get("yes_bid")), _to_float(opp.get("yes_ask"))
+        bid, ask = own_leg_bid_ask(side, yes_bid, yes_ask)
+        if bid <= 0.0 or bid >= 1.0:
+            self.book.skip_opportunity(opp, "no bid to join")
+            return False
+        spread = _to_float(opp.get("spread"))
+        if spread and spread > rc.max_spread:
+            self.book.skip_opportunity(opp, f"spread {spread:.3f} > {rc.max_spread}")
+            return False
+        # Edge is re-checked at OUR price (better than the mid the scanner used).
+        model_prob = float(opp.get("model_prob") or 0)
+        if model_prob - bid < rc.min_edge:
+            self.book.skip_opportunity(opp, "edge below gate at resting price")
+            return False
+        contracts = int(size / bid)
+        if contracts < 1:
+            self.book.skip_opportunity(opp, "size < 1 contract")
+            return False
+        self.resting.place(opp, bid, contracts, "paper", rc.rest_seconds)
+        self.risk.record_entry(market_id, bid, contracts, side.lower(), contracts * bid,
+                               event_ticker=opp.get("event_ticker"))
+        return True
+
+    def _poll_resting(self):
+        """Advance every resting order: fill, partial, expire or cancel."""
+        rc = self.config.risk
+        for row in self.resting.active():
+            market_id = row.get("market_id", "")
+            mode = row.get("mode")
+            try:
+                if mode == "paper":
+                    self._poll_paper_rest(row, rc)
+                elif mode == "live" and self._live_ready:
+                    self._poll_live_rest(row, rc)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"resting poll failed for {market_id}: {e}")
+
+    def _book_rest_fill(self, row: dict, book, note: str, status: str = "filled",
+                        filled: float | None = None, avg_fill: float | None = None,
+                        fee_per_contract: float = 0.0):
+        """Book a fill into the position book FIRST, then mark the ledger row —
+        so a crash between the two leaves a row that reconciliation re-books
+        (idempotent on order id), never a filled order with no position."""
+        oid = row.get("order_id") or row["id"]
+        already = any((t.get("order_id") == oid) for t in book.get_open_positions() + book.get_closed_positions())
+        row_fill = dict(row)
+        row_fill["filled"] = float(filled if filled is not None else row.get("filled") or row["contracts"])
+        row_fill["avg_fill"] = avg_fill if avg_fill is not None else row.get("avg_fill")
+        row_fill["fee_per_contract"] = fee_per_contract
+        fill = self.resting.fill_for_book(row_fill)
+        if not already:
+            opp = dict(row.get("opp") or {})
+            opp["market_price"] = fill["price"]
+            opp["signal"] = row["signal"]
+            trade = book.open_position(opp, fill["size_usd"], fill=fill)
+            self.risk.resize_entry(row["market_id"], fill["price"], fill["contracts"], fill["size_usd"])
+            logger.info(f"[{row['mode'].upper()}] resting order FILLED {row['signal']} {fill['contracts']:g}x "
+                        f"@ {fill['price']:.4f} on {row['market_id']} ({note})")
+            try:
+                if self.telegram.is_configured():
+                    self.telegram.send_trade_opened({**trade, "status": row["mode"]})
+            except Exception as e:
+                logger.debug(f"rest-fill notify failed: {e}")
+        self.resting.settle(row, status, filled=row_fill["filled"], avg_fill=fill["price"],
+                            fee_per_contract=fee_per_contract, note=note)
+
+    def _reconcile_resting(self):
+        """Startup / per-cycle: any ledger row marked filled/partial whose fill
+        never reached the book (crash between book and settle in an older
+        version, or between settle and book) is booked now, once."""
+        for row in self.resting.recent(200):
+            if row.get("status") not in ("filled", "partial") or row.get("reconciled"):
+                continue
+            book = self.paper if row.get("mode") == "paper" else self.live_book
+            oid = row.get("order_id") or row["id"]
+            if not any(t.get("order_id") == oid for t in book.get_open_positions() + book.get_closed_positions()):
+                logger.warning(f"reconcile: booking orphaned fill {oid} on {row.get('market_id')}")
+                self._book_rest_fill(row, book, "reconciled", status=row["status"])
+            row["reconciled"] = True
+        self.resting._save()
+
+    def _poll_paper_rest(self, row: dict, rc):
+        expired = time.time() >= float(row["expires_ts"])
+        m = None
+        try:
+            m = self.kalshi.get_market(row["market_id"])
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"resting poll: get_market failed {row['market_id']}: {e}")
+        if not m:
+            if expired:
+                self.resting.settle(row, "expired", note="expired (market unreadable)")
+                self.risk.release_entry(row["market_id"])
+            return
+        q = self.kalshi.quote(m)
+        status = (m.get("status") or "").lower()
+        if not expired and status not in ("closed", "settled", "finalized") \
+                and self.resting.paper_would_fill(row, q["yes_bid"], q["yes_ask"]):
+            px = float(row["price"])
+            self._book_rest_fill(row, self.paper, "paper: market traded through our price",
+                                 filled=row["contracts"], avg_fill=px,
+                                 fee_per_contract=rc.maker_fee_rate * px * (1 - px))
+        elif expired or status in ("closed", "settled", "finalized"):
+            self.resting.settle(row, "expired", note="no fill before expiry/close")
+            self.risk.release_entry(row["market_id"])
+            logger.info(f"[PAPER] resting order expired unfilled on {row['market_id']}")
+
+    def _poll_live_rest(self, row: dict, rc):
+        expired = time.time() >= float(row["expires_ts"])
+        st = None
+        try:
+            st = self.live.poll_order(row["order_id"]) if row.get("order_id") else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"resting poll: get_order failed {row.get('order_id')}: {e}")
+        if not st:
+            if expired and row.get("order_id"):
+                # Cannot read it: try to kill it; release only once it is confirmed dead.
+                if self.live.cancel(row["order_id"], row["market_id"]):
+                    self.resting.settle(row, "cancelled", note="unreadable; cancelled at expiry")
+                    self.risk.release_entry(row["market_id"])
+            return
+        filled = float(st.get("fill_count") or 0)
+        px = float(st.get("average_fill_price") or row["price"])
+        if row["signal"] == "NO" and st.get("average_fill_price"):
+            px = 1.0 - float(st["average_fill_price"])          # exchange reports the yes leg
+        fee = float(st.get("fee_per_contract") or 0.0)
+        if st["status"] == "executed" or filled >= row["contracts"] - 1e-9:
+            self._book_rest_fill(row, self.live_book, "live: exchange executed",
+                                 filled=filled or row["contracts"], avg_fill=px, fee_per_contract=fee)
+        elif st["status"] in ("canceled", "cancelled", "expired") or expired:
+            if expired and st["status"] == "resting":
+                if not self.live.cancel(row["order_id"], row["market_id"]):
+                    return                                          # still alive: try again next cycle
+            if filled > 0:
+                self._book_rest_fill(row, self.live_book, "live: partial fill then cancelled",
+                                     status="partial", filled=filled, avg_fill=px, fee_per_contract=fee)
+            else:
+                self.resting.settle(row, "expired", note="cancelled unfilled")
+                self.risk.release_entry(row["market_id"])
+
+    def _recheck_edge(self, opp: dict, rc) -> tuple:
+        """A Telegram confirm can arrive minutes after the scan: re-run the
+        model on a FRESH quote and require the edge at our resting bid."""
+        try:
+            m = self.kalshi.get_market(opp.get("market_id", ""))
+            if not m:
+                return False, "no fresh quote"
+            q = self.kalshi.quote(m)
+            side = str(opp.get("signal", "YES")).upper()
+            bid, _ = own_leg_bid_ask(side, q["yes_bid"], q["yes_ask"])
+            if bid <= 0:
+                return False, "no bid to join"
+            mid = q["mid"]
+            hours = max(0.25, (parse_days_to_resolution(m.get("expected_expiration_time") or m.get("close_time")) or 0) * 24)
+            p_yes = self.model.prob(mid, opp.get("category"), hours)
+            p_side = p_yes if side == "YES" else 1.0 - p_yes
+            if p_side - bid < rc.min_edge:
+                return False, f"edge {p_side - bid:.3f} at bid {bid:.2f} below {rc.min_edge}"
+            opp["model_prob"] = round(p_side, 4)
+            return True, "ok"
+        except Exception as e:  # noqa: BLE001
+            return False, f"recheck failed: {e}"
+
+    def _calibration_stats(self) -> dict:
+        """Brier score of the Predict stage on resolved positions vs the
+        market's own Brier at entry — the honest 'did the model add anything'."""
+        try:
+            path = Path("logs/calibration.jsonl")
+            if not path.exists():
+                return {"n": 0}
+            rows = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+            rows = [r for r in rows if r.get("model_prob") is not None and r.get("market_price") is not None]
+            if not rows:
+                return {"n": 0}
+            bm = sum((float(r["model_prob"]) - r["y"]) ** 2 for r in rows) / len(rows)
+            bp = sum((float(r["market_price"]) - r["y"]) ** 2 for r in rows) / len(rows)
+            return {"n": len(rows), "brier_model": round(bm, 4), "brier_market": round(bp, 4),
+                    "hit_rate": round(sum(r["y"] for r in rows) / len(rows), 3)}
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"calibration stats failed: {e}")
+            return {"n": 0}
+
+    def _log_calibration(self, pos: dict, result: str):
+        """Append (model_prob, price, outcome) for every resolved position so
+        the Predict stage is scored on Brier/reliability, not just P&L."""
+        try:
+            signal = (pos.get("signal") or "YES").upper()
+            y = 1 if ((signal == "YES") == (result == "yes")) else 0
+            row = {
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "market_id": pos.get("market_id"), "signal": signal,
+                "category": pos.get("category"), "cell": pos.get("model_cell"),
+                "model_prob": pos.get("model_prob"), "market_price": pos.get("entry_price"),
+                "y": y, "mode": self.config.mode,
+            }
+            with open("logs/calibration.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"calibration log failed: {e}")
+
     def _check_closures(self):
         open_positions = self.book.get_open_positions()
         if not open_positions:
@@ -494,6 +751,7 @@ class PredMarketBot:
                 win = (signal == "YES" and result == "yes") or (signal == "NO" and result == "no")
                 if self._close(pos, 1.0 if win else 0.0, "resolved"):
                     closed_now += 1
+                    self._log_calibration(pos, result)
                 continue
 
             mark = self._own_leg_price(signal, m)
@@ -530,6 +788,8 @@ class PredMarketBot:
 
         # Execute confirmed trades / handle commands before scanning again.
         self._poll_telegram()
+        self._reconcile_resting()
+        self._poll_resting()
 
         opportunities = await self.scan_markets()
         rc = self.config.risk
@@ -548,7 +808,10 @@ class PredMarketBot:
                 continue
 
             if self.config.mode == "paper":
-                # Paper fills at the touch (ask), not the mid -- honest slippage.
+                if rc.entry_style == "maker":
+                    self._paper_rest(opp, size, side, rc)
+                    continue
+                # TAKER (legacy v6): paper fills at the touch (ask), not the mid.
                 fill_price = price
                 yes_ask, yes_bid = _to_float(opp.get("yes_ask")), _to_float(opp.get("yes_bid"))
                 if side == "YES" and yes_ask > 0:

@@ -60,6 +60,10 @@ strategy:
     - kalshi
 
 risk:
+  allow_heuristic: false
+  entry_style: maker
+  rest_seconds: 1800
+  maker_fee_rate: 0.0
   max_daily_loss_usd: 100.00     # Auto-stop if daily loss exceeds this (scaled with bankroll)
   max_open_positions: 5           # Max simultaneous positions
   max_consecutive_losses: 3       # Pause after N consecutive losses

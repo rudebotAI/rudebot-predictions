@@ -172,6 +172,84 @@ class LiveTrader:
         }
 
     # ------------------------------------------------------------------
+    def execute_maker(self, opportunity: dict, size_usd: float, rest_seconds: int,
+                      nonce: Optional[str] = None) -> dict:
+        """Rest a post-only GTC buy at our side's BID (join the queue, pay no
+        fee) that the exchange expires after `rest_seconds`. Returns
+        {"success": True, "resting": True, "order_id", "price", "contracts"}
+        — nothing is booked until `poll_order` reports fills."""
+        if not self.enabled:
+            return {"error": "Live trading not enabled"}
+        market_id = opportunity.get("market_id", "")
+        side = str(opportunity.get("signal", "YES")).lower()
+        if not market_id or side not in ("yes", "no") or size_usd <= 0:
+            return {"error": "bad opportunity/size"}
+        q = self._fresh_quote(market_id)
+        if not q:
+            return {"error": "Could not fetch fresh quote"}
+        touch = self._side_prices(side, q)
+        bid, ask = touch["bid"], touch["ask"]
+        if not bid or bid <= 0 or bid >= 1:
+            return {"error": f"No {side.upper()} bid to join (bid={bid})"}
+        if q["spread"] is None or q["spread"] > self.max_spread:
+            return {"error": f"Spread {q['spread']} exceeds max {self.max_spread}"}
+        price = bid
+        contracts = int(size_usd / price)
+        if contracts < 1:
+            return {"error": f"Size ${size_usd:.2f} buys <1 contract at {price:.4f}"}
+        allowed, reason = self.risk.can_trade(market_id, contracts * price, side,
+                                              event_ticker=opportunity.get("event_ticker"))
+        if not allowed:
+            return {"error": f"Risk blocked: {reason}"}
+        coid = make_client_order_id(market_id, side, "rest", nonce or str(int(time.time())))
+        result = self.kalshi.place_order(
+            market_id=market_id, side=side, price=price, count=contracts, action="buy",
+            time_in_force="good_till_canceled", post_only=True, client_order_id=coid,
+            expiration_time=int(time.time()) + int(rest_seconds), price_ranges=q.get("price_ranges"),
+        )
+        if result is None:
+            # The request may have been ACCEPTED and only the response lost: a
+            # GTC order would then rest for rest_seconds with nobody watching.
+            found = None
+            try:
+                found = self.kalshi.find_order_by_client_id(market_id, coid)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[LIVE] order lookup after lost response failed: {e}")
+            if found and found.get("order_id"):
+                logger.warning(f"[LIVE] recovered resting order {found['order_id']} after lost response")
+                result = {"order_id": found["order_id"], "fill_count": found.get("fill_count", 0.0),
+                          "average_fill_price": None, "average_fee_paid": 0.0}
+            else:
+                return {"error": "Kalshi order request failed (no response)", "client_order_id": coid}
+        if result.get("error"):
+            return {"error": result["error"], "client_order_id": coid}
+        # post_only that would cross is rejected by the exchange; an immediate
+        # fill here means we were already at/through the ask — book it anyway.
+        self.risk.record_entry(market_id, price, contracts, side, contracts * price,
+                               event_ticker=opportunity.get("event_ticker"))
+        logger.info(f"[LIVE] resting post-only {side.upper()} {contracts}x @ {price:.4f} on {market_id} "
+                    f"(order {result.get('order_id')}, expires in {rest_seconds}s)")
+        return {"success": True, "resting": True, "order_id": result.get("order_id"),
+                "client_order_id": coid, "price": price, "contracts": contracts,
+                "fill_count": float(result.get("fill_count") or 0),
+                "average_fill_price": result.get("average_fill_price"),
+                "fee_per_contract": result.get("average_fee_paid", 0.0)}
+
+    def poll_order(self, order_id: str) -> Optional[dict]:
+        """Normalized {status, fill_count, avg_price_yes, fee} for a resting order."""
+        o = self.kalshi.get_order(order_id)
+        if not o:
+            return None
+        return {"status": str(o.get("status") or "").lower(),
+                "fill_count": float(o.get("fill_count") or 0),
+                "remaining_count": float(o.get("remaining_count") or 0),
+                "average_fill_price": o.get("average_fill_price"),
+                "fee_per_contract": float(o.get("average_fee_paid") or 0.0)}
+
+    def cancel(self, order_id: str, market_id: Optional[str] = None) -> bool:
+        return bool(self.kalshi.cancel_order(order_id, market_ticker=market_id))
+
+    # ------------------------------------------------------------------
     def close(self, position: dict, reason: str = "manual", nonce: Optional[str] = None) -> dict:
         """Sell out of a held outcome with a reduce-only IOC at the bid minus
         slippage. Returns {"success": True, "contracts": filled, "price": avg}

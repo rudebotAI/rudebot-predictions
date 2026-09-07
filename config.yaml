@@ -34,3 +34,9 @@ risk:
   # --- exits on marked positions ---
   stop_loss_pct: -0.50
   take_profit_pct: 1.00
+
+  # --- v6.1 Predict / Execute stages (docs/research/2026-09-06-predict-stage.md) ---
+  allow_heuristic: false     # legacy heuristic model has no validated edge; calibration model only
+  entry_style: maker         # post-only resting entries at our side's bid (0 fee); "taker" = v6 IOC
+  rest_seconds: 1800         # how long an entry rests before the exchange expires it
+  maker_fee_rate: 0.0        # Kalshi maker multiplier is 0 in nearly all series (Jul 2026 schedule)

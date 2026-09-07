@@ -1,0 +1,37 @@
+name: Refit calibration model
+
+# Weekly re-estimation of the Predict stage from Kalshi's public settled-market
+# history (no secrets needed). Commits models/calibration.json when it changes;
+# Railway redeploys main, so the bot picks up the new cells automatically.
+on:
+  schedule:
+    - cron: "17 6 * * 1"      # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build settled-market dataset (public API)
+        run: |
+          PYTHONPATH=. python research/kalshi_history.py --days 120 --per-series 40 --series-per-category 60 \
+            --out research/cache/settled_latest.jsonl
+      - name: Fit calibration cells
+        run: |
+          PYTHONPATH=. python research/calibration.py research/cache/settled_latest.jsonl --out models/calibration.json | tee research/cache/fit_report.txt
+      - name: Commit model if changed
+        run: |
+          git config user.name "calibration-bot"
+          git config user.email "calibration-bot@users.noreply.github.com"
+          git add models/calibration.json
+          if git diff --cached --quiet; then echo "no change"; exit 0; fi
+          git commit -m "models: weekly calibration refit ($(date -u +%F))"
+          git push

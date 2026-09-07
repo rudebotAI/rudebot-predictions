@@ -70,6 +70,14 @@ class RiskConfig:
     # Exit discipline on marked positions (fraction of entry)
     stop_loss_pct: float = -0.50
     take_profit_pct: float = 1.00
+    # Predict stage: the legacy heuristic model has no validated edge and is
+    # OFF. Only the calibration model (models/calibration.json) creates edge.
+    allow_heuristic: bool = False
+    # Execute stage: "maker" rests a post-only limit at our side's bid for
+    # rest_seconds (0 fee, captures the spread); "taker" is the v6 IOC path.
+    entry_style: str = "maker"
+    rest_seconds: int = 1800
+    maker_fee_rate: float = 0.0          # Kalshi maker multiplier is 0 in nearly all series (Jul 2026)
 
     @property
     def min_edge(self) -> float:
