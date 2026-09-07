@@ -34,4 +34,6 @@ jobs:
           git add models/calibration.json
           if git diff --cached --quiet; then echo "no change"; exit 0; fi
           git commit -m "models: weekly calibration refit ($(date -u +%F))"
-          git push
+          # main may have moved during the ~1h data pull: rebase, then push (retry once)
+          git pull --rebase origin main || (git rebase --abort; git pull --no-rebase origin main)
+          git push || (git pull --rebase origin main && git push)
