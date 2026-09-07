@@ -689,6 +689,48 @@ class PredMarketBot:
         except Exception as e:  # noqa: BLE001
             return False, f"recheck failed: {e}"
 
+    def _announce_model_state(self):
+        """Telegram the operator whenever the set of USABLE calibration cells
+        changes (a weekly refit commits models/calibration.json and Railway
+        redeploys, so boot is the moment). Persisted in logs/model_state.json
+        so an unchanged model on a plain restart stays quiet."""
+        state_path = Path("logs/model_state.json")
+        cells = sorted(k for k, c in self.model.cells.items() if c.get("used") and not k.startswith("ALL|"))
+        generated = self.model.model.get("generated") if self.model.model else None
+        prev = {}
+        try:
+            if state_path.exists():
+                prev = json.loads(state_path.read_text(encoding="utf-8")) or {}
+        except (OSError, ValueError):
+            prev = {}
+        changed = (prev.get("cells") != cells) or (prev.get("generated") != generated)
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps({"cells": cells, "generated": generated,
+                                              "version": VERSION, "mode": self.config.mode}), encoding="utf-8")
+        except OSError as e:
+            logger.debug(f"model_state save failed: {e}")
+        if not changed or not self.telegram.is_configured():
+            return
+        if not self.model.model:
+            text = (f"<b>Model MISSING</b> (v{VERSION}, {self.config.mode}) -- no calibration file; "
+                    f"the bot scans but cannot find edge.")
+        elif cells:
+            lines = []
+            for k in cells:
+                c = self.model.cells[k]
+                lines.append(f"  {k}: slope {c['b']:.2f}, n={c['n']}, Brier {c['brier_market_holdout']}->{c['brier_calibrated_holdout']}")
+            text = (f"<b>Model ARMED</b> (v{VERSION}, {self.config.mode}) -- refit {str(generated)[:16]}: "
+                    f"{len(cells)} usable cell(s). Trade cards can now fire.\n" + "\n".join(lines))
+        else:
+            text = (f"<b>Model refit -- no usable cells</b> (v{VERSION}, {self.config.mode}) -- refit "
+                    f"{str(generated)[:16]} on {self.model.model.get('n_rows', 0)} settled markets. "
+                    f"Bot stays idle: no edge source, no trades.")
+        try:
+            self.telegram.send(text)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"model-state notify failed: {e}")
+
     def _calibration_stats(self) -> dict:
         """Brier score of the Predict stage on resolved positions vs the
         market's own Brier at entry — the honest 'did the model add anything'."""
@@ -875,6 +917,7 @@ class PredMarketBot:
 
         logger.info(f"Starting PredMarketBot v{VERSION} ({self.config.mode} mode)")
         logger.info(f"Scan interval: {self.config.scan_interval}s")
+        self._announce_model_state()
 
         while True:
             try:

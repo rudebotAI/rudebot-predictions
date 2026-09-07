@@ -134,3 +134,33 @@ class TestCrashSafety(unittest.TestCase):
         b._poll_resting()
         self.assertEqual(b.paper.get_open_positions(), [])
         self.assertEqual(b.resting.active("paper"), [])
+
+
+class TestModelStateAnnounce(unittest.TestCase):
+    def test_announces_only_on_change(self):
+        import os as _os
+        from research.calibration import CalibratedModel
+        tmp = tempfile.TemporaryDirectory()
+        cwd = _os.getcwd()
+        _os.chdir(tmp.name)
+        try:
+            b = _bot(tmp.name)
+            sent = []
+            b.telegram = SimpleNamespace(is_configured=lambda: True, send=lambda t, **k: sent.append(t))
+            b.model = CalibratedModel({"generated": "g1", "n_rows": 10, "cells": {}})
+            b._announce_model_state()
+            self.assertEqual(len(sent), 1)
+            self.assertIn("no usable cells", sent[0])
+            b._announce_model_state()                       # same model: quiet
+            self.assertEqual(len(sent), 1)
+            b.model = CalibratedModel({"generated": "g2", "n_rows": 10, "cells": {
+                "Politics|24": {"used": True, "b": 1.5, "n": 300, "brier_market_holdout": 0.2, "brier_calibrated_holdout": 0.19},
+                "ALL|24": {"used": True, "b": 1.2, "n": 900, "brier_market_holdout": 0.2, "brier_calibrated_holdout": 0.19}}})
+            b._announce_model_state()
+            self.assertEqual(len(sent), 2)
+            self.assertIn("ARMED", sent[1])
+            self.assertIn("Politics|24", sent[1])
+            self.assertNotIn("ALL|24", sent[1])
+        finally:
+            _os.chdir(cwd)
+            tmp.cleanup()
