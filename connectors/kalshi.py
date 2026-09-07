@@ -121,6 +121,7 @@ class KalshiConnector:
     def __init__(self, config: dict):
         self._last_request = 0
         self._logged_sample = False
+        self._series_fees: dict = {}   # series_ticker -> (taker_rate, maker_rate)
 
         if config.get("email") or config.get("api_key"):
             logger.warning(
@@ -501,6 +502,28 @@ class KalshiConnector:
     # ------------------------------------------------------------------
     # Market scanning
     # ------------------------------------------------------------------
+    def series_fee_rates(self, series_ticker: str) -> tuple:
+        """(taker_rate, maker_rate) per contract as multiples of P(1-P), from
+        the series' fee_type / fee_multiplier (July 2026 schedule: taker
+        0.07·M; maker 0.0175·M only where fee_type mentions maker fees, else 0).
+        Cached per process; unknown series fall back to the taker default."""
+        if not series_ticker:
+            return 0.07, 0.0
+        if series_ticker in self._series_fees:
+            return self._series_fees[series_ticker]
+        taker, maker = 0.07, 0.0
+        try:
+            resp = self._http_get(f"/series/{series_ticker}")
+            sr = (resp or {}).get("series") or {}
+            mult = _to_float(sr.get("fee_multiplier"), 1.0) or 1.0
+            taker = 0.07 * mult
+            if "maker" in str(sr.get("fee_type") or "").lower():
+                maker = 0.0175 * mult
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"series fee lookup failed {series_ticker}: {e}")
+        self._series_fees[series_ticker] = (taker, maker)
+        return taker, maker
+
     def scan_markets_with_prices(self, limit=30, per_event_cap=6, event_limit=100) -> list:
         """
         Event-based scan: fetch /events, then /markets?event_ticker for each.
@@ -532,6 +555,7 @@ class KalshiConnector:
                 continue
             ev_category = ev.get("category") or ""
             ev_series = ev.get("series_ticker") or ""
+            taker_rate, maker_rate = self.series_fee_rates(ev_series)
             ms = self.get_markets(event_ticker=event_ticker, limit=50)
             if not ms:
                 continue
@@ -588,6 +612,8 @@ class KalshiConnector:
                         "event_ticker": event_ticker,
                         "series_ticker": ev_series,
                         "category": ev_category,
+                        "taker_fee_rate": taker_rate,
+                        "maker_fee_rate": maker_rate,
                         "exchange_index": m.get("exchange_index", 0),
                         "yes_price": yes_price,
                         "no_price": no_price,
