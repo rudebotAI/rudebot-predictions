@@ -216,6 +216,7 @@ This repo deploys on Railway out of the box:
   refit to produce the new keys; until then it reports no usable cells.
 - Shared HTTP throttle is now lock-protected (discovery thread + trading loop).
 - `/state.json` → `model.scan_targets`, `model.discovery`, `model.candidates`.
+- Diagnosis, live probe and what the finer cells revealed: `docs/research/2026-09-08-scan-stage.md`.
 
 ### v6.1 — 2026-09-06 (Predict + Execute stages rebuilt on evidence)
 - **Predict**: the heuristic probability model is OFF (`allow_heuristic: false`).
