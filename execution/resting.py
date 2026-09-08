@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 OPP_KEEP = ("platform", "question", "market_id", "event_ticker", "series_ticker", "category",
             "signal", "ev", "edge", "model_prob", "model_cell", "model_reason", "market_price",
             "kelly_raw", "kelly_fractional", "size_usd", "shares", "days_to_resolution", "exchange_index",
-            "taker_fee_rate", "maker_fee_rate")
+            "taker_fee_rate", "maker_fee_rate", "frequency", "scan_cell")
 
 
 def _now() -> float:

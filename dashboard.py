@@ -144,6 +144,18 @@ def _render_html(s: dict) -> str:
                     f'&middot; {"model adds skill" if cal.get("brier_model", 1) < cal.get("brier_market", 0) else "model NOT beating the market yet"}')
     else:
         cal_line = "no resolved positions yet"
+    disc = model.get("discovery") or {}
+    if not model.get("loaded"):
+        scan_line = "targeted scan idle (no model)"
+    elif not cells:
+        scan_line = "targeted scan idle (no usable cells) &middot; generic sweep only"
+    elif not disc:
+        scan_line = f'targeting {len(model.get("scan_targets") or [])} cells &middot; first discovery running&hellip;'
+    else:
+        per = disc.get("per_cell") or {}
+        per_txt = html.escape(", ".join(f"{k}: {v}" for k, v in sorted(per.items()))) or "none in window"
+        scan_line = (f'discovery {html.escape(str(disc.get("at", "?")))[11:19]}Z ({disc.get("seconds", "?")}s) &middot; '
+                     f'{disc.get("candidates", 0)} candidates &middot; {per_txt}')
     exec_line = (f'{entry_style} &middot; {rest_sum.get("resting", 0)} resting &middot; '
                  f'{rest_sum.get("filled", 0)}/{rest_sum.get("settled", 0)} filled'
                  + (f' ({rest_sum["fill_rate"]:.0%})' if rest_sum.get("fill_rate") is not None else ""))
@@ -231,6 +243,7 @@ a{{color:#7dd3fc}}
 
 <div class="section"><h2>Predict stage &middot; calibration model</h2>
   <div class="card">{model_line}</div>
+  <div class="card">Scan stage: {scan_line}</div>
   <div class="card">Live scoring: {cal_line}</div>
   <div class="card">Execute stage: {exec_line}</div>
 </div>

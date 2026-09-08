@@ -1,4 +1,4 @@
-# Prediction Market Quant Bot — Kalshi (v6.1)
+# Prediction Market Quant Bot — Kalshi (v6.2)
 
 Scans **Kalshi** prediction markets for +EV opportunities using a quant stack:
 
@@ -81,7 +81,10 @@ python main.py --once
 1. **Closures** — mark open positions (own-leg prices), resolve settled
    markets, stop-loss / take-profit; realized P&L feeds the risk manager
 2. **Telegram** — execute confirmed trades, answer `/pnl` `/status` `/positions` `/resume`
-3. **Scan** — Kalshi `/events` → per-event `/markets` (≤6 per event, by 24h volume)
+3. **Scan** — cell-aware first: a background discovery (every 20 min) lists
+   open markets in every `(category / frequency class, horizon)` cell the model
+   can price, filtered on `expected_expiration_time`; each cycle requotes those
+   (one call per event), then tops up with the generic `/events` sweep
 4. **Predict** — model probability, fee-adjusted EV; gate on **edge ≥ 0.04** and EV ≥ 0.05
 5. **Size** — fractional Kelly on the bankroll (paper: `bankroll_usd` + P&L; live: Kalshi balance),
    capped by `max_position_usd` and `max_portfolio_pct`
@@ -192,6 +195,27 @@ This repo deploys on Railway out of the box:
 ---
 
 ## Changelog
+
+### v6.2 — 2026-09-08 (Scan stage follows the model)
+- **Diagnosis**: v6.1 ran 700+ scans with an armed model and found 0
+  opportunities — the generic `/events` sweep returns the first 100 open events
+  (long-dated Politics/Elections, all in the 168 h bucket), never the categories
+  and horizons where the model has usable cells.
+- **Cell-aware discovery** (`KalshiConnector.discover_targets`): daily series
+  catalog + 15-min open-event index → for every series whose category and
+  frequency class match a usable cell, list open markets whose scheduled
+  resolution (`expected_expiration_time`, never `close_time`) falls in that
+  cell's horizon window (geometric midpoints between fitted horizons). Call
+  budget is round-robined across cells so Sports cannot starve a small category.
+  Runs in a daemon thread every 20 min; the scan loop reads the snapshot.
+- **Requote** (`requote_candidates`): fresh quotes per cycle, one call per
+  event, drops closed / vanished markets. The generic sweep still runs after it.
+- **Cells are now `Category/freq_class|horizon`** (recurring = daily/hourly/
+  weekly/15-min/custom series; one_off = everything else). The old `Sports|24`
+  cell mixed game markets with season futures. The deployed model needs one
+  refit to produce the new keys; until then it reports no usable cells.
+- Shared HTTP throttle is now lock-protected (discovery thread + trading loop).
+- `/state.json` → `model.scan_targets`, `model.discovery`, `model.candidates`.
 
 ### v6.1 — 2026-09-06 (Predict + Execute stages rebuilt on evidence)
 - **Predict**: the heuristic probability model is OFF (`allow_heuristic: false`).
