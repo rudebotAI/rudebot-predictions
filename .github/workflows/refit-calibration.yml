@@ -22,7 +22,7 @@ jobs:
           python-version: "3.12"
       - name: Build settled-market dataset (public API)
         run: |
-          PYTHONPATH=. python research/kalshi_history.py --days 120 --per-series 40 --series-per-category 60 \
+          PYTHONPATH=. python research/kalshi_history.py --days 180 --per-series 40 --series-per-category 80 \
             --out research/cache/settled_latest.jsonl
       - name: Fit calibration cells
         run: |

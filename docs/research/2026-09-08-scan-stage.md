@@ -62,13 +62,48 @@ Consequence: until a refit on the 120-day pull produces qualifying cells
 under the new keys, the bot reports "no usable cells" and does not trade.
 That is the intended behaviour: no measured edge, no position.
 
+## Refit on the 120-day pull (2026-09-08 21:10 UTC, 7,316 settled markets)
+
+Zero per-category cells pass. The ones that matter:
+
+| cell | n | events | slope | 95% CI | holdout Brier mkt → cal | blocked by |
+|---|---|---|---|---|---|---|
+| Sports/recurring\|24 | 1274 | ok | 0.97 | [0.86, 1.21] | 0.1818 → 0.1817 | slope CI includes 1 |
+| Sports/recurring\|6 | 1434 | ok | 0.97 | [0.88, 1.24] | 0.1739 → 0.1747 | no improvement |
+| Sports/recurring\|72 | 749 | ok | 0.92 | [0.72, 1.23] | 0.2076 → 0.2014 | slope CI includes 1 |
+| Sports/recurring\|1 | 514 | ok | 1.02 | [0.67, 1.25] | 0.0877 → 0.0891 | no improvement |
+| Climate and Weather/recurring\|24 | 1281 | ok | 1.21 | [0.97, 1.47] | 0.0400 → 0.0399 | slope CI includes 1 |
+| Science and Technology/one_off\|24 | 566 | 65 | 1.72 | [1.29, 3.19] | 0.0183 → 0.0143 | < 100 independent events |
+| Science and Technology/one_off\|72 | 572 | 66 | 1.47 | [1.04, 1.93] | 0.0289 → 0.0245 | < 100 independent events |
+| Economics/recurring\|24 | 417 | 40 | 1.78 | [1.34, 3.02] | 0.0675 → 0.0639 | < 100 independent events |
+| Commodities/one_off\|24 | 302 | 16 | 2.81 | [2.14, 22.7] | 0.0886 → 0.0696 | < 100 independent events |
+
+Reading: with four-digit samples, Kalshi game markets (MLB, CS2, NBA, NPB…)
+show no miscalibration at any horizon — the v6.1 `Sports|24` slope of
+0.735 was entirely the futures/awards mixture. Weather daily highs likewise.
+The categories that *look* miscalibrated (market underconfident, slope > 1)
+are all strike ladders — dozens of markets per launch date, CPI print or oil
+price — where the rows are not independent and the event-count gate holds.
+Those cells could reach the gate with a longer history (≈180 days); that is
+a pre-declared change to the sample, not to the gates, so the weekly Action
+now pulls 180 days / 80 series per category. Pooled `ALL|h` cells pass at
+three horizons but are never traded (categories are miscalibrated in
+opposite directions).
+
+Deployed consequence: `models/calibration.json` in this PR carries the
+truthful state — 0 usable cells — so the bot idles on the generic sweep and
+the Telegram boot message says "no usable cells". This replaces three cells
+that would have traded a false edge.
+
 ## Next
 
-1. Refit on the 120-day dataset with the new keys (running; the weekly
-   Action does the same every Monday).
-2. If a cell qualifies, discovery will already target it; watch
-   `/state.json → model.discovery.per_cell` and the dashboard Scan-stage line.
-3. If no cell qualifies for two consecutive refits, the calibration edge is
-   rejected for now and the remaining structural edge is maker execution
-   alone, which needs a different (spread-capture) entry rule — a separate
-   pre-registration.
+1. Weekly Action refits on 180 days / 80 series per category; if a strike-
+   ladder cell clears the event gate on two consecutive refits, discovery
+   targets it automatically — watch `/state.json → model.discovery.per_cell`
+   and the dashboard Scan-stage line.
+2. The calibration edge on game markets is rejected: do not revisit without a
+   new hypothesis (e.g. in-game state, which K1 already tested and closed).
+3. The remaining structural edge is maker execution (spread capture) alone,
+   which needs its own entry rule and pre-registration (K3: post-only
+   two-sided quoting on high-volume recurring markets, sized to the
+   inventory limit, evaluated on realised spread minus adverse selection).

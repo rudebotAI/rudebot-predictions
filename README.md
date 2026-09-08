@@ -215,6 +215,12 @@ This repo deploys on Railway out of the box:
   cell mixed game markets with season futures. The deployed model needs one
   refit to produce the new keys; until then it reports no usable cells.
 - Shared HTTP throttle is now lock-protected (discovery thread + trading loop).
+- `research/kalshi_history.py --resume --time-budget N`: interrupted dataset
+  builds continue from a `.done` sidecar; `load_dataset` de-duplicates by ticker.
+- Refit on 7,316 settled markets under the new keys: 0 usable cells — game
+  markets are calibrated (Sports/recurring|24 slope 0.97, n=1,274); the weekly
+  Action now pulls 180 days / 80 series per category so strike-ladder cells can
+  reach the independent-event gate. The shipped model reflects this.
 - `/state.json` → `model.scan_targets`, `model.discovery`, `model.candidates`.
 - Diagnosis, live probe and what the finer cells revealed: `docs/research/2026-09-08-scan-stage.md`.
 
