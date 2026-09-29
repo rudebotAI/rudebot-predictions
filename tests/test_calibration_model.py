@@ -93,7 +93,7 @@ class TestScannerUsesModel(unittest.TestCase):
         opps = sc.scan([self._market(0.70, "Politics"), self._market(0.70, "Weather")])
         self.assertEqual(len(opps), 1)
         self.assertEqual(opps[0]["signal"], "YES")
-        self.assertEqual(opps[0]["model_cell"], "Politics|24")
+        self.assertEqual(opps[0]["model_cell"], "Politics/one_off|24")
         self.assertGreater(opps[0]["edge"], 0.04)
 
     def test_heuristic_only_when_explicitly_allowed(self):

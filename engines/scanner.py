@@ -120,7 +120,8 @@ class EVScanner:
         if self.model is not None:
             days = parse_days_to_resolution(market.get("expected_expiration") or market.get("end_date"))
             hours = max(0.25, (days or 0.0) * 24.0)
-            info = self.model.explain(float(yes_price), market.get("category"), hours)
+            info = self.model.explain(float(yes_price), market.get("category"), hours,
+                                      market.get("frequency"))
             market["model_cell"] = info.get("cell")
             market["model_reason"] = info.get("reason")
             if info.get("cell"):

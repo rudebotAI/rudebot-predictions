@@ -42,6 +42,30 @@ MAX_ITERS = 200
 
 MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "calibration.json"
 
+RECURRING_FREQS = {"fifteen_min", "hourly", "daily", "weekly", "custom"}
+
+
+def freq_class(frequency: str | None) -> str:
+    """Series frequency -> 'recurring' (games, daily/weekly price and weather
+    ladders) or 'one_off' (one-off, monthly, annual). Recurring and one-off
+    markets in the same category are different animals (a moneyline vs a
+    season futures market), so cells are keyed by both."""
+    return "recurring" if str(frequency or "").lower() in RECURRING_FREQS else "one_off"
+
+
+def cell_group(category: str | None, frequency: str | None) -> str:
+    return f"{category or '?'}/{freq_class(frequency)}"
+
+
+def horizon_window_hours(h_key: str, max_hours: float = 90 * 24.0) -> tuple[float, float]:
+    """[lo, hi) hours-to-resolution that map to horizon key `h_key` under the
+    nearest-on-log-scale rule (geometric midpoints between the fitted horizons)."""
+    hs = [float(k) for k in HORIZON_KEYS]
+    i = [str(int(x)) for x in hs].index(str(int(float(h_key))))
+    lo = 0.25 if i == 0 else math.sqrt(hs[i - 1] * hs[i])
+    hi = max_hours if i == len(hs) - 1 else math.sqrt(hs[i] * hs[i + 1])
+    return lo, hi
+
 
 def logit(p: float) -> float:
     p = min(max(p, 1e-4), 1 - 1e-4)
@@ -120,7 +144,7 @@ def _cells(rows: list[dict]) -> dict[tuple[str, str], list[tuple]]:
     and a close) so splits and bootstraps never treat them as independent."""
     cells: dict[tuple[str, str], list[tuple]] = defaultdict(list)
     for i, r in enumerate(rows):
-        c = r.get("category") or "?"
+        c = cell_group(r.get("category"), r.get("frequency"))
         ev = r.get("event_ticker") or r.get("ticker") or f"row{i}"
         for h, p in (r.get("p") or {}).items():
             if h in HORIZON_KEYS and p is not None and 0.0 < float(p) < 1.0:
@@ -263,27 +287,45 @@ class CalibratedModel:
                 best, bd = k, d
         return best
 
-    def cell_for(self, category: str | None, hours_to_close: float) -> tuple[str, dict] | tuple[None, None]:
-        """Only the market's OWN category cell is ever used. The pooled
-        ALL|h cells are reported for context but never traded on: categories
-        are mis-calibrated in OPPOSITE directions (politics underconfident,
-        weather overconfident), so a pooled slope would be wrong for both."""
+    def usable_cells(self) -> dict[str, dict]:
+        return {k: c for k, c in self.cells.items() if c.get("used") and not k.startswith("ALL|")}
+
+    def scan_targets(self) -> list[dict]:
+        """What the Scan stage should look for: one entry per usable cell with
+        the category, frequency class and hours-to-resolution window."""
+        out = []
+        for k in self.usable_cells():
+            grp, h = k.split("|")
+            cat, _, fc = grp.rpartition("/")
+            lo, hi = horizon_window_hours(h)
+            out.append({"cell": k, "category": cat, "freq_class": fc, "horizon": h, "lo_h": lo, "hi_h": hi})
+        return out
+
+    def cell_for(self, category: str | None, hours_to_close: float,
+                 frequency: str | None = None) -> tuple[str, dict] | tuple[None, None]:
+        """Only the market's OWN (category, frequency-class, horizon) cell is
+        ever used. The pooled ALL|h cells are reported for context but never
+        traded on: categories are mis-calibrated in OPPOSITE directions
+        (politics underconfident, weather overconfident), so a pooled slope
+        would be wrong for both."""
         h = self.horizon_key(hours_to_close)
-        key = f"{category}|{h}"
+        key = f"{cell_group(category, frequency)}|{h}"
         c = self.cells.get(key)
         if c and c.get("used"):
             return key, c
         return None, None
 
-    def prob(self, price: float, category: str | None, hours_to_close: float) -> float:
-        key, c = self.cell_for(category, hours_to_close)
+    def prob(self, price: float, category: str | None, hours_to_close: float,
+             frequency: str | None = None) -> float:
+        key, c = self.cell_for(category, hours_to_close, frequency)
         if not c:
             return price
         return sigmoid(c["a"] + c["b"] * logit(price))
 
-    def explain(self, price: float, category: str | None, hours_to_close: float) -> dict:
-        key, c = self.cell_for(category, hours_to_close)
-        p = self.prob(price, category, hours_to_close)
+    def explain(self, price: float, category: str | None, hours_to_close: float,
+                frequency: str | None = None) -> dict:
+        key, c = self.cell_for(category, hours_to_close, frequency)
+        p = self.prob(price, category, hours_to_close, frequency)
         return {"cell": key, "model_prob": round(p, 4), "edge": round(p - price, 4),
                 "slope": c["b"] if c else None, "n": c["n"] if c else 0,
                 "reason": (f"calibration {key}: slope {c['b']:.2f}, n={c['n']}, "

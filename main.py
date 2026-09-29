@@ -42,7 +42,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("predbot")
 
-VERSION = "6.1"
+VERSION = "6.2"
 
 
 def _to_float(x, default=0.0):
@@ -131,6 +131,10 @@ class PredMarketBot:
         )
         # Execute stage: post-only resting entries (paper sim + live), one ledger.
         self.resting = RestingOrders("logs/resting_orders.json")
+        # Scan stage: cell-aware discovery snapshot (refreshed in the background).
+        self._targeted_candidates: list = []
+        self._discovery_ts = 0.0
+        self._discovery_info: dict = {}
 
         # Telegram confirm/alert channel + live executor.
         self.telegram = TelegramAlerts({
@@ -380,6 +384,9 @@ class PredMarketBot:
                 "generated": self.model.model.get("generated") if self.model.model else None,
                 "n_rows": self.model.model.get("n_rows") if self.model.model else 0,
                 "cells_used": [k for k, c in self.model.cells.items() if c.get("used") and not k.startswith("ALL|")],
+                "scan_targets": self.model.scan_targets() if self.model.model else [],
+                "discovery": getattr(self, "_discovery_info", {}),
+                "candidates": len(getattr(self, "_targeted_candidates", []) or []),
             },
             "calibration": self._calibration_stats(),
         }
@@ -387,16 +394,62 @@ class PredMarketBot:
     # ------------------------------------------------------------------
     # Scan / predict / size
     # ------------------------------------------------------------------
+    def _maybe_start_discovery(self, targets: list, interval_s: int = 1200):
+        """Kick off (or refresh) the slow cell-aware discovery in a daemon
+        thread at most every `interval_s`; the scan loop reads the snapshot."""
+        import threading
+        now = time.time()
+        if getattr(self, "_discovery_thread", None) and self._discovery_thread.is_alive():
+            return
+        if now - getattr(self, "_discovery_ts", 0.0) < interval_s:
+            return          # also when the last run found nothing: no re-scan every cycle
+
+        def _run():
+            t0 = time.time()
+            try:
+                found = self.kalshi.discover_targets(targets)
+                self._targeted_candidates = found
+                self._discovery_ts = time.time()
+                per_cell: dict = {}
+                for c in found:
+                    per_cell[c.get("scan_cell", "?")] = per_cell.get(c.get("scan_cell", "?"), 0) + 1
+                self._discovery_info = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                        "candidates": len(found), "cells": len(targets),
+                                        "per_cell": per_cell, "seconds": round(time.time() - t0, 1)}
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"discovery failed: {e}")
+                self._discovery_ts = time.time()
+
+        self._discovery_thread = threading.Thread(target=_run, name="discovery", daemon=True)
+        self._discovery_thread.start()
+
     async def scan_markets(self):
         logger.info("Scanning markets...")
         markets = []
         k_count = 0
 
         if "kalshi" in self.config.platforms:
+            # Cell-aware scan first: only markets in the (category, frequency
+            # class, horizon window) of a USABLE calibration cell can carry
+            # edge, and the generic /events scan almost never reaches them.
+            targets = self.model.scan_targets() if self.model.model else []
+            if targets:
+                try:
+                    self._maybe_start_discovery(targets)
+                    cands = list(self._targeted_candidates)
+                    t_markets = await asyncio.to_thread(self.kalshi.requote_candidates, cands, 40) if cands else []
+                    markets.extend(t_markets)
+                    logger.info(f"Kalshi targeted: {len(t_markets)} requoted of {len(cands)} candidates "
+                                f"for {len(targets)} cells")
+                except Exception as e:
+                    msg = f"Kalshi targeted scan failed: {e}"
+                    logger.warning(msg)
+                    self._errors.append(msg)
             try:
                 k_markets = await asyncio.to_thread(self.kalshi.scan_markets_with_prices, 50)
-                markets.extend(k_markets)
-                k_count = len(k_markets)
+                have = {m.get("market_id") for m in markets}
+                markets.extend(m for m in k_markets if m.get("market_id") not in have)
+                k_count = len(markets)
                 logger.info(f"Kalshi: fetched {k_count} markets")
             except Exception as e:
                 msg = f"Kalshi fetch failed: {e}"
@@ -680,7 +733,7 @@ class PredMarketBot:
                 return False, "no bid to join"
             mid = q["mid"]
             hours = max(0.25, (parse_days_to_resolution(m.get("expected_expiration_time") or m.get("close_time")) or 0) * 24)
-            p_yes = self.model.prob(mid, opp.get("category"), hours)
+            p_yes = self.model.prob(mid, opp.get("category"), hours, opp.get("frequency"))
             p_side = p_yes if side == "YES" else 1.0 - p_yes
             if p_side - bid < rc.min_edge:
                 return False, f"edge {p_side - bid:.3f} at bid {bid:.2f} below {rc.min_edge}"

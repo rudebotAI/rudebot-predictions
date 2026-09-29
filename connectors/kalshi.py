@@ -21,6 +21,7 @@ What changed vs v5:
 Public market data still needs no auth, so paper mode is unaffected.
 """
 import json
+import threading
 import time
 import logging
 import urllib.request
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2"
 API_PREFIX = "/trade-api/v2"
-USER_AGENT = "rudebot-predictions/6.0"
+USER_AGENT = "rudebot-predictions/6.2"
 
 # Default price grid when a market payload has no price_ranges (older
 # markets are whole-cent). Whole-cent prices are valid in every structure.
@@ -120,8 +121,13 @@ class KalshiConnector:
 
     def __init__(self, config: dict):
         self._last_request = 0
+        self._throttle_lock = threading.Lock()   # discovery thread + trading loop share one bucket
         self._logged_sample = False
         self._series_fees: dict = {}   # series_ticker -> (taker_rate, maker_rate)
+        self._catalog: dict = {}       # series_ticker -> {category, frequency, fee_type, fee_multiplier}
+        self._catalog_ts: float = 0.0
+        self._event_index: dict = {}   # series_ticker -> {"category", "events"} for OPEN events
+        self._event_index_ts: float = 0.0
 
         if config.get("email") or config.get("api_key"):
             logger.warning(
@@ -191,10 +197,11 @@ class KalshiConnector:
     # HTTP plumbing
     # ------------------------------------------------------------------
     def _throttle(self):
-        elapsed = time.time() - self._last_request
-        if elapsed < 0.1:
-            time.sleep(0.1 - elapsed)
-        self._last_request = time.time()
+        with self._throttle_lock:
+            elapsed = time.time() - self._last_request
+            if elapsed < 0.1:
+                time.sleep(0.1 - elapsed)
+            self._last_request = time.time()
 
     def _public_headers(self) -> dict:
         return {
@@ -502,6 +509,207 @@ class KalshiConnector:
     # ------------------------------------------------------------------
     # Market scanning
     # ------------------------------------------------------------------
+    # ---- catalog + open-event index (Scan stage, cell-aware) -----------------
+    def series_catalog(self, max_age_s: int = 24 * 3600, cache_path: str = "logs/series_catalog.json") -> dict:
+        """All series (~14k): category, frequency, fee_type, fee_multiplier.
+        Public endpoint, ~70 pages; refreshed daily and cached on disk."""
+        import json as _json
+        import os as _os
+        import time as _time
+        if self._catalog and _time.time() - self._catalog_ts < max_age_s:
+            return self._catalog
+        try:
+            if _os.path.exists(cache_path) and _time.time() - _os.path.getmtime(cache_path) < max_age_s:
+                with open(cache_path, encoding="utf-8") as fh:
+                    self._catalog = _json.load(fh)
+                    self._catalog_ts = _time.time()
+                    return self._catalog
+        except (OSError, ValueError):
+            pass
+        out: dict = {}
+        cursor = ""
+        for _ in range(120):
+            resp = self._http_get("/series?limit=200" + (f"&cursor={cursor}" if cursor else ""), timeout=20)
+            if not resp:
+                break
+            for sr in resp.get("series", []) or []:
+                out[sr["ticker"]] = {"category": sr.get("category"), "frequency": sr.get("frequency"),
+                                     "fee_type": sr.get("fee_type"), "fee_multiplier": sr.get("fee_multiplier")}
+                mult = _to_float(sr.get("fee_multiplier"), 1.0) or 1.0
+                self._series_fees[sr["ticker"]] = (0.07 * mult,
+                                                   0.0175 * mult if "maker" in str(sr.get("fee_type") or "").lower() else 0.0)
+            cursor = resp.get("cursor") or ""
+            if not cursor:
+                break
+        if out:
+            self._catalog, self._catalog_ts = out, _time.time()
+            try:
+                _os.makedirs(_os.path.dirname(cache_path) or ".", exist_ok=True)
+                with open(cache_path, "w", encoding="utf-8") as fh:
+                    _json.dump(out, fh)
+            except OSError:
+                pass
+        return self._catalog
+
+    def open_event_index(self, max_age_s: int = 15 * 60, max_pages: int = 100) -> dict:
+        """{series_ticker: {"category": ..., "events": n}} for every OPEN event
+        (~12k events, ~60 pages without nested markets). Refreshed every 15 min."""
+        import time as _time
+        if self._event_index and _time.time() - self._event_index_ts < max_age_s:
+            return self._event_index
+        idx: dict = {}
+        cursor = ""
+        for _ in range(max_pages):
+            resp = self._http_get("/events?status=open&limit=200" + (f"&cursor={cursor}" if cursor else ""), timeout=20)
+            if not resp:
+                break
+            for ev in resp.get("events", []) or []:
+                st = ev.get("series_ticker") or str(ev.get("event_ticker", "")).split("-")[0]
+                row = idx.setdefault(st, {"category": ev.get("category") or "", "events": 0})
+                row["events"] += 1
+            cursor = resp.get("cursor") or ""
+            if not cursor:
+                break
+        if idx:
+            self._event_index, self._event_index_ts = idx, _time.time()
+        return self._event_index
+
+    # ---- targeted (cell-aware) discovery + requote ------------------------------
+    def _enrich_market(self, m: dict, st: str, category: str, frequency, cell: str) -> Optional[dict]:
+        q = self.quote(m)
+        vol_total = _to_float(m.get("volume_fp"))
+        oi = _to_float(m.get("open_interest_fp"))
+        if (vol_total <= 0 and oi <= 0) or q["mid"] <= 0:
+            return None
+        no_bid = _to_float(m.get("no_bid_dollars"))
+        no_ask = _to_float(m.get("no_ask_dollars"))
+        no_price = (no_bid + no_ask) / 2 if (no_bid > 0 and no_ask > 0) else 1.0 - q["mid"]
+        no_price = max(0.001, min(0.999, no_price))
+        taker_rate, maker_rate = self.series_fee_rates(st)
+        mid_ = m.get("ticker", "")
+        return {
+            "platform": "kalshi", "question": m.get("title", "") or m.get("subtitle", "") or mid_,
+            "market_id": mid_, "event_ticker": m.get("event_ticker", ""),
+            "series_ticker": st, "category": category, "frequency": frequency,
+            "scan_cell": cell, "exchange_index": m.get("exchange_index", 0),
+            "yes_price": q["mid"], "no_price": no_price,
+            "yes_bid": q["yes_bid"], "yes_ask": q["yes_ask"], "spread": q["spread"],
+            "ask_size": q["ask_size"], "bid_size": q["bid_size"], "price_ranges": q["price_ranges"],
+            "volume": vol_total, "volume_24h": _to_float(m.get("volume_24h_fp")),
+            "open_interest": oi, "liquidity": _to_float(m.get("liquidity_dollars")),
+            "end_date": m.get("close_time", ""),
+            "expected_expiration": m.get("expected_expiration_time") or m.get("close_time", ""),
+            "taker_fee_rate": taker_rate, "maker_fee_rate": maker_rate, "raw": m,
+        }
+
+    @staticmethod
+    def _hours_to(iso: str) -> Optional[float]:
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+            return (dt - datetime.now(timezone.utc)).total_seconds() / 3600.0
+        except (TypeError, ValueError):
+            return None
+
+    def discover_targets(self, targets: list, max_series_calls: int = 600, per_series_cap: int = 12) -> list:
+        """SLOW (minutes): for every open series whose category / frequency
+        class matches a usable cell, list the open markets whose scheduled
+        resolution falls in that cell's hours window. Returns enriched market
+        dicts (a snapshot; requote before acting). Run in a background thread."""
+        import time as _time
+        from research.calibration import freq_class as _fc
+        if not targets:
+            return []
+        catalog = self.series_catalog()
+        index = self.open_event_index()
+        now = int(_time.time())
+        wanted = []
+        for st, row in index.items():
+            meta = catalog.get(st) or {}
+            cat = row.get("category") or meta.get("category") or ""
+            fc = _fc(meta.get("frequency"))
+            for t in targets:
+                if t["category"] == cat and t["freq_class"] == fc:
+                    wanted.append((st, t, meta))
+        # Fair share of the call budget per cell: busiest series first WITHIN a
+        # cell, then round-robin across cells so a big category (Sports) cannot
+        # starve a small one (Science and Technology) when the budget caps.
+        by_cell: dict = {}
+        for st, t, meta in wanted:
+            by_cell.setdefault(t["cell"], []).append((st, t, meta))
+        for rows in by_cell.values():
+            rows.sort(key=lambda x: -index[x[0]]["events"])
+        wanted = []
+        queues = list(by_cell.values())
+        while queues:
+            for rows in list(queues):
+                if rows:
+                    wanted.append(rows.pop(0))
+                else:
+                    queues.remove(rows)
+        out: list = []
+        seen: set = set()
+        calls = 0
+        for st, t, meta in wanted:
+            if calls >= max_series_calls:
+                break
+            # server filter is on close_time; the model's horizon is measured to
+            # expected_expiration, so widen the close window and filter client-side
+            lo, hi = now + int(max(0.0, t["lo_h"] - 6) * 3600), now + int((t["hi_h"] + 24) * 3600)
+            resp = self._http_get(f"/markets?series_ticker={st}&status=open&limit=200"
+                                  f"&min_close_ts={lo}&max_close_ts={hi}", timeout=20)
+            calls += 1
+            ms = (resp or {}).get("markets", []) or []
+            ms.sort(key=lambda x: _to_float(x.get("volume_24h_fp")), reverse=True)
+            taken = 0
+            for m in ms:
+                mid_ = m.get("ticker", "")
+                if not mid_ or mid_ in seen or taken >= per_series_cap:
+                    continue
+                h = self._hours_to(m.get("expected_expiration_time") or m.get("close_time"))
+                if h is None or not (t["lo_h"] <= h < t["hi_h"]):
+                    continue
+                try:
+                    row = self._enrich_market(m, st, t["category"], meta.get("frequency"), t["cell"])
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"discover skip {mid_}: {e}")
+                    continue
+                if row:
+                    seen.add(mid_)
+                    taken += 1
+                    out.append(row)
+        out.sort(key=lambda x: -(x.get("volume_24h") or 0))
+        logger.info(f"Kalshi discovery: {len(out)} candidate markets from {calls} series calls "
+                    f"({len(wanted)} candidate series, {len(targets)} cells)")
+        return out
+
+    def requote_candidates(self, candidates: list, max_events: int = 40) -> list:
+        """FAST (seconds): fresh quotes for the top candidates, one call per
+        event (all of an event's markets come back together). Drops markets
+        that closed or left their horizon window."""
+        by_event: dict = {}
+        for c in candidates:
+            by_event.setdefault(c.get("event_ticker", ""), []).append(c)
+        # busiest events first
+        events = sorted(by_event, key=lambda e: -sum((c.get("volume_24h") or 0) for c in by_event[e]))[:max_events]
+        out: list = []
+        for ev in events:
+            if not ev:
+                continue
+            resp = self._http_get(f"/markets?event_ticker={ev}&limit=200", timeout=15)
+            fresh = {m.get("ticker"): m for m in ((resp or {}).get("markets", []) or [])}
+            for c in by_event[ev]:
+                m = fresh.get(c["market_id"])
+                if not m or (m.get("status") or "").lower() not in ("open", "active", ""):
+                    continue
+                try:
+                    row = self._enrich_market(m, c["series_ticker"], c["category"], c.get("frequency"), c.get("scan_cell", ""))
+                except Exception:  # noqa: BLE001
+                    row = None
+                if row:
+                    out.append(row)
+        return out
+
     def series_fee_rates(self, series_ticker: str) -> tuple:
         """(taker_rate, maker_rate) per contract as multiples of P(1-P), from
         the series' fee_type / fee_multiplier (July 2026 schedule: taker
@@ -612,6 +820,7 @@ class KalshiConnector:
                         "event_ticker": event_ticker,
                         "series_ticker": ev_series,
                         "category": ev_category,
+                        "frequency": (self._catalog.get(ev_series) or {}).get("frequency") if self._catalog else None,
                         "taker_fee_rate": taker_rate,
                         "maker_fee_rate": maker_rate,
                         "exchange_index": m.get("exchange_index", 0),

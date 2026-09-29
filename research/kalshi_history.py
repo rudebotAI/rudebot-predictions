@@ -210,12 +210,27 @@ def price_at_horizons(cs: list[dict], sched_ts: int, close_ts: int | None = None
 
 def build_dataset(categories=CATEGORIES, days_back: int = 60, max_markets_per_series: int = 60,
                   max_series_per_category: int = 40, min_volume: float = 20.0,
-                  out_path: Path | None = None, log_every: int = 25) -> Path:
+                  out_path: Path | None = None, log_every: int = 25, resume: bool = False,
+                  time_budget_s: float | None = None) -> Path:
     """Write research/cache/settled_<date>.jsonl with one row per settled
     market: category, result, volume, horizon prices. Bounded so a full run
-    stays within ~30 minutes at the public rate limit."""
+    stays within ~30 minutes at the public rate limit.
+
+    resume=True continues an interrupted run: series listed in the sidecar
+    `<out>.done` are skipped, rows are appended, and a series interrupted
+    mid-way is re-pulled (load_dataset de-duplicates by ticker). Empty series
+    (no settled volume) are recorded too, so they are not re-queried.
+    time_budget_s stops cleanly after that many seconds (call again to continue)."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     out_path = out_path or (CACHE_DIR / f"settled_{datetime.now(timezone.utc):%Y%m%d}.jsonl")
+    done_path = Path(str(out_path) + ".done")
+    t_start = time.monotonic()
+    done: dict[str, str] = {}      # series -> "rows" | "empty"
+    if resume and done_path.exists():
+        for line in done_path.read_text().splitlines():
+            if line.strip():
+                st, _, flag = line.strip().partition(" ")
+                done[st] = flag or "rows"
     cat = series_catalog()
     since = int(time.time()) - days_back * 86400
     by_cat: dict[str, list[str]] = {}
@@ -224,19 +239,29 @@ def build_dataset(categories=CATEGORIES, days_back: int = 60, max_markets_per_se
         if c in categories and not s.startswith("KXMVE"):
             by_cat.setdefault(c, []).append(s)
     n_rows = 0
-    with out_path.open("w") as fh:
+    mode = "a" if (resume and out_path.exists()) else "w"
+    if mode == "w" and done_path.exists():
+        done_path.unlink()
+    with out_path.open(mode) as fh, done_path.open("a") as dh:
         for c, tickers in by_cat.items():
             rows_c = 0
-            series_seen = 0
+            series_seen = sum(1 for s in tickers if done.get(s) == "rows")
             for s in tickers:
                 if series_seen >= max_series_per_category:
                     break
+                if s in done:
+                    continue
+                if time_budget_s is not None and time.monotonic() - t_start > time_budget_s:
+                    logger.info("dataset: time budget reached, %d new rows; re-run with --resume", n_rows)
+                    return out_path
                 try:
                     ms = settled_markets(s, max_markets=max_markets_per_series, min_volume=min_volume, since_ts=since)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("settled_markets failed %s: %s", s, e)
                     continue
                 if not ms:
+                    dh.write(f"{s} empty\n"); dh.flush()
+                    done[s] = "empty"
                     continue
                 series_seen += 1
                 for m in ms:
@@ -260,18 +285,24 @@ def build_dataset(categories=CATEGORIES, days_back: int = 60, max_markets_per_se
                     rows_c += 1
                     if n_rows % log_every == 0:
                         logger.info("dataset: %d rows (%s: %d)", n_rows, c, rows_c)
+                fh.flush()
+                dh.write(f"{s} rows\n"); dh.flush()
+                done[s] = "rows"
             logger.info("category %s: %d rows from %d series", c, rows_c, series_seen)
     logger.info("dataset written: %s (%d rows)", out_path, n_rows)
     return out_path
 
 
 def load_dataset(path: Path) -> list[dict]:
-    rows = []
+    """Rows de-duplicated by market ticker (a resumed build may re-pull a
+    series that was interrupted mid-way); last occurrence wins."""
+    by_ticker: dict[str, dict] = {}
     for line in Path(path).read_text().splitlines():
         line = line.strip()
         if line:
-            rows.append(json.loads(line))
-    return rows
+            r = json.loads(line)
+            by_ticker[r.get("ticker") or str(len(by_ticker))] = r
+    return list(by_ticker.values())
 
 
 def logit(p: float) -> float:
@@ -288,7 +319,9 @@ if __name__ == "__main__":
     ap.add_argument("--series-per-category", type=int, default=40)
     ap.add_argument("--min-volume", type=float, default=20.0)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--resume", action="store_true", help="continue an interrupted build (needs --out)")
+    ap.add_argument("--time-budget", type=float, default=None, help="stop cleanly after N seconds")
     a = ap.parse_args()
     build_dataset(days_back=a.days, max_markets_per_series=a.per_series,
                   max_series_per_category=a.series_per_category, min_volume=a.min_volume,
-                  out_path=Path(a.out) if a.out else None)
+                  out_path=Path(a.out) if a.out else None, resume=a.resume, time_budget_s=a.time_budget)

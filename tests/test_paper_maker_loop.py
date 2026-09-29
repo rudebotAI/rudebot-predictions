@@ -154,12 +154,12 @@ class TestModelStateAnnounce(unittest.TestCase):
             b._announce_model_state()                       # same model: quiet
             self.assertEqual(len(sent), 1)
             b.model = CalibratedModel({"generated": "g2", "n_rows": 10, "cells": {
-                "Politics|24": {"used": True, "b": 1.5, "n": 300, "brier_market_holdout": 0.2, "brier_calibrated_holdout": 0.19},
+                "Politics/one_off|24": {"used": True, "b": 1.5, "n": 300, "brier_market_holdout": 0.2, "brier_calibrated_holdout": 0.19},
                 "ALL|24": {"used": True, "b": 1.2, "n": 900, "brier_market_holdout": 0.2, "brier_calibrated_holdout": 0.19}}})
             b._announce_model_state()
             self.assertEqual(len(sent), 2)
             self.assertIn("ARMED", sent[1])
-            self.assertIn("Politics|24", sent[1])
+            self.assertIn("Politics/one_off|24", sent[1])
             self.assertNotIn("ALL|24", sent[1])
         finally:
             _os.chdir(cwd)
